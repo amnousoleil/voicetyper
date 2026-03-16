@@ -311,6 +311,20 @@ class VoskEngine:
         try:
             from vosk import Model, KaldiRecognizer, SetLogLevel
             SetLogLevel(-1)
+            # Fix: Vosk/Kaldi can fail with long Windows paths
+            import platform
+            if platform.system() == 'Windows':
+                try:
+                    import ctypes
+                    buf = ctypes.create_unicode_buffer(512)
+                    ctypes.windll.kernel32.GetShortPathNameW(model_path, buf, 512)
+                    short_path = buf.value
+                    if short_path:
+                        log.info("Using short path: %s -> %s", model_path, short_path)
+                        model_path = short_path
+                except Exception as e:
+                    log.debug("Short path failed: %s", e)
+            log.info("Loading Vosk model from: %s", model_path)
             self._model = Model(model_path)
             self._recognizer = KaldiRecognizer(self._model, self.SAMPLE_RATE)
             self._recognizer.SetWords(True)
