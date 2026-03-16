@@ -18,8 +18,7 @@
   "dependencies": {
     "electron-log": "^5.4.3",
     "electron-updater": "^6.8.3",
-    "qrcode": "^1.5.3",
-    "ws": "^8.19.0"
+    "qrcode": "^1.5.3"
   },
   "author": "VoiceTyper",
   "build": {

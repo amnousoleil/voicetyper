@@ -3,7 +3,8 @@
 const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, shell, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
-const WS = require('ws');
+// Zéro dépendance externe — WebSocket natif Electron/Node
+const WS_OPEN = 1;
 const os = require('os');
 const fs = require('fs');
 const https = require('https');
@@ -282,42 +283,42 @@ function stopPythonEngine() {
 // ─── WebSocket connection to engine ───────────────────────────────────────────
 function connectToEngine() {
   if (engineWs) {
-    try { engineWs.terminate(); } catch {}
+    try { engineWs.close(); } catch {}
     engineWs = null;
   }
 
   console.log('[WS] Connecting to engine at', ENGINE_WS_URL);
-  const ws = new WS(ENGINE_WS_URL);
+  const ws = new WebSocket(ENGINE_WS_URL); // WebSocket natif Electron (global)
   engineWs = ws;
 
-  ws.on('open', () => {
+  ws.onopen = () => {
     console.log('[WS] Connected to engine');
     engineReady = true;
     reconnectAttempts = 0;
     sendToWindow('engine-status', { connected: true });
-  });
+  };
 
-  ws.on('message', (raw) => {
+  ws.onmessage = (event) => {
     try {
-      const msg = JSON.parse(raw.toString());
+      const msg = JSON.parse(event.data);
       handleEngineMessage(msg);
     } catch (e) {
-      console.error('[WS] Bad message:', raw.toString().slice(0, 200));
+      console.error('[WS] Bad message:', String(event.data).slice(0, 200));
     }
-  });
+  };
 
-  ws.on('close', (code, reason) => {
-    console.log(`[WS] Disconnected — code=${code}`);
+  ws.onclose = (event) => {
+    console.log(`[WS] Disconnected — code=${event.code}`);
     engineReady = false;
     engineWs = null;
     sendToWindow('engine-status', { connected: false });
     scheduleReconnect();
-  });
+  };
 
-  ws.on('error', (err) => {
-    console.error('[WS] Error:', err.message);
+  ws.onerror = (event) => {
+    console.error('[WS] Error:', event.message || 'connection error');
     engineReady = false;
-  });
+  };
 }
 
 function scheduleReconnect() {
@@ -333,7 +334,7 @@ function scheduleReconnect() {
 }
 
 function sendToEngine(msg) {
-  if (engineWs && engineWs.readyState === WS.OPEN) {
+  if (engineWs && engineWs.readyState === WS_OPEN) {
     engineWs.send(JSON.stringify(msg));
   } else {
     console.warn('[WS] Cannot send — engine not connected');
