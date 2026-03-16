@@ -3,8 +3,6 @@
 const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, shell, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
-// Zéro dépendance externe — WebSocket natif Electron/Node
-const WS_OPEN = 1;
 const os = require('os');
 const fs = require('fs');
 const https = require('https');
@@ -12,10 +10,7 @@ const http = require('http');
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const ENGINE_PORT = 7523;
-const ENGINE_WS_URL = `ws://127.0.0.1:${ENGINE_PORT}/ws`;
 const ENGINE_HTTP_URL = `http://127.0.0.1:${ENGINE_PORT}`;
-const RECONNECT_DELAY_MS = 2000;
-const MAX_RECONNECT_ATTEMPTS = 20;
 
 const UPDATE_SERVER_URL = 'http://72.60.215.20:8766';
 const UPDATE_CHECK_DELAY_MS = 5000; // Check 5s after startup
@@ -24,11 +19,8 @@ const UPDATE_CHECK_DELAY_MS = 5000; // Check 5s after startup
 let mainWindow = null;
 let tray = null;
 let pythonProcess = null;
-let engineWs = null;
 let engineReady = false;
 let isQuitting = false;
-let reconnectAttempts = 0;
-let reconnectTimer = null;
 let isDictating = false;
 let pendingUpdatePath = null; // Path to downloaded update file
 
@@ -38,7 +30,7 @@ app.whenReady().then(async () => {
   createTray();
   registerShortcuts();
   await startPythonEngine();
-  connectToEngine();
+  startPolling();
   // Check for updates after a short delay (let UI settle first)
   setTimeout(() => checkForUpdates(), UPDATE_CHECK_DELAY_MS);
 });
@@ -263,14 +255,7 @@ function getEnginePath() {
 }
 
 function stopPythonEngine() {
-  if (engineWs) {
-    try { engineWs.close(); } catch {}
-    engineWs = null;
-  }
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
+  stopPolling();
   if (pythonProcess) {
     console.log('[Engine] Sending SIGTERM to Python process');
     pythonProcess.kill('SIGTERM');
@@ -280,65 +265,62 @@ function stopPythonEngine() {
   }
 }
 
-// ─── WebSocket connection to engine ───────────────────────────────────────────
-function connectToEngine() {
-  if (engineWs) {
-    try { engineWs.close(); } catch {}
-    engineWs = null;
-  }
+// ─── HTTP Polling (remplace WebSocket) ────────────────────────────────────────
+let pollTimer = null;
+let lastEventId = 0;
 
-  console.log('[WS] Connecting to engine at', ENGINE_WS_URL);
-  const ws = new WebSocket(ENGINE_WS_URL); // WebSocket natif Electron (global)
-  engineWs = ws;
-
-  ws.onopen = () => {
-    console.log('[WS] Connected to engine');
-    engineReady = true;
-    reconnectAttempts = 0;
-    sendToWindow('engine-status', { connected: true });
-  };
-
-  ws.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      handleEngineMessage(msg);
-    } catch (e) {
-      console.error('[WS] Bad message:', String(event.data).slice(0, 200));
-    }
-  };
-
-  ws.onclose = (event) => {
-    console.log(`[WS] Disconnected — code=${event.code}`);
-    engineReady = false;
-    engineWs = null;
-    sendToWindow('engine-status', { connected: false });
-    scheduleReconnect();
-  };
-
-  ws.onerror = (event) => {
-    console.error('[WS] Error:', event.message || 'connection error');
-    engineReady = false;
-  };
+function startPolling() {
+  if (pollTimer) return;
+  console.log('[Poll] Starting HTTP polling on', ENGINE_HTTP_URL);
+  pollTimer = setInterval(pollEngine, 200);
 }
 
-function scheduleReconnect() {
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+function pollEngine() {
   if (isQuitting) return;
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    console.error('[WS] Max reconnect attempts reached');
-    return;
-  }
-  reconnectAttempts++;
-  const delay = Math.min(RECONNECT_DELAY_MS * reconnectAttempts, 15000);
-  console.log(`[WS] Reconnecting in ${delay}ms (attempt ${reconnectAttempts})`);
-  reconnectTimer = setTimeout(connectToEngine, delay);
+  http.get(`${ENGINE_HTTP_URL}/poll?since=${lastEventId}`, (res) => {
+    let data = '';
+    res.on('data', chunk => data += chunk);
+    res.on('end', () => {
+      try {
+        const events = JSON.parse(data);
+        if (!Array.isArray(events)) return;
+        events.forEach(msg => {
+          if (msg.id > lastEventId) lastEventId = msg.id;
+          handleEngineMessage(msg);
+        });
+        if (!engineReady) {
+          engineReady = true;
+          sendToWindow('engine-status', { connected: true });
+          console.log('[Poll] Engine connected');
+        }
+      } catch {}
+    });
+  }).on('error', () => {
+    if (engineReady) {
+      engineReady = false;
+      sendToWindow('engine-status', { connected: false });
+      console.warn('[Poll] Engine unreachable');
+    }
+  });
 }
 
 function sendToEngine(msg) {
-  if (engineWs && engineWs.readyState === WS_OPEN) {
-    engineWs.send(JSON.stringify(msg));
-  } else {
-    console.warn('[WS] Cannot send — engine not connected');
-  }
+  const body = JSON.stringify(msg);
+  const options = {
+    hostname: '127.0.0.1',
+    port: ENGINE_PORT,
+    path: '/command',
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+  };
+  const req = http.request(options, (res) => { res.resume(); });
+  req.on('error', (err) => console.warn('[HTTP] Command error:', err.message));
+  req.write(body);
+  req.end();
 }
 
 function handleEngineMessage(msg) {
@@ -546,7 +528,7 @@ async function checkEngineUpdate() {
 
     // Restart engine
     await startPythonEngine();
-    connectToEngine();
+    startPolling();
     sendToWindow('engine-updated', { version: latest.version });
     console.log('[EngineUpdater] Engine updated to', latest.version);
   } catch (err) {

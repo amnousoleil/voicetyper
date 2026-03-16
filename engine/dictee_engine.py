@@ -78,6 +78,10 @@ class VoiceTyperEngine:
         self.injector = None
         self._init_injector()
 
+        # HTTP polling event queue
+        self._event_queue: list = []
+        self._event_counter: int = 0
+
         # Web app
         self.app = web.Application()
         self._setup_routes()
@@ -120,6 +124,9 @@ class VoiceTyperEngine:
         self.app.router.add_get('/status', self._handle_status)
         self.app.router.add_get('/ws', self._handle_ws_ui)
         self.app.router.add_get('/ws/phone', self._handle_ws_phone)
+        # HTTP polling endpoints (remplace WebSocket côté Electron main process)
+        self.app.router.add_get('/poll', self._handle_poll)
+        self.app.router.add_post('/command', self._handle_command)
 
         # Serve static UI files
         ui_dir = Path(__file__).parent.parent / 'ui'
@@ -159,6 +166,33 @@ class VoiceTyperEngine:
             'phone_clients': len(self.phone_clients),
             'platform': platform.system(),
         })
+
+    # ── HTTP Polling ──────────────────────────────────────────────────────────
+    def _emit_event(self, event_type: str, **kwargs):
+        """Enqueue an event for HTTP polling clients."""
+        self._event_counter += 1
+        self._event_queue.append({'id': self._event_counter, 'type': event_type, **kwargs})
+        # Keep only last 200 events
+        if len(self._event_queue) > 200:
+            self._event_queue[:] = self._event_queue[-200:]
+
+    async def _handle_poll(self, request: web.Request) -> web.Response:
+        """GET /poll?since=N — returns events with id > N."""
+        try:
+            since = int(request.rel_url.query.get('since', 0))
+        except (ValueError, TypeError):
+            since = 0
+        events = [e for e in self._event_queue if e['id'] > since]
+        return web.json_response(events)
+
+    async def _handle_command(self, request: web.Request) -> web.Response:
+        """POST /command — receive a command JSON and execute it."""
+        try:
+            msg = await request.json()
+        except Exception:
+            return web.json_response({'ok': False, 'error': 'invalid json'}, status=400)
+        await self._handle_ui_message(None, json.dumps(msg))
+        return web.json_response({'ok': True})
 
     # ── WebSocket — UI ────────────────────────────────────────────────────────
     async def _handle_ws_ui(self, request: web.Request) -> web.WebSocketResponse:
@@ -395,6 +429,10 @@ class VoiceTyperEngine:
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────
     async def _broadcast_ui(self, msg: dict):
+        # Always emit to HTTP polling queue
+        event_type = msg.get('type', 'unknown')
+        self._emit_event(event_type, **{k: v for k, v in msg.items() if k != 'type'})
+        # Also broadcast to WebSocket UI clients (phone web interface etc.)
         if not self.ui_clients:
             return
         dead = set()
@@ -458,6 +496,12 @@ class VoiceTyperEngine:
         ip = self._get_local_ip()
         log.info(f"VoiceTyper Engine started on http://{ip}:{self.port}")
         log.info(f"Phone URL: http://{ip}:{self.port}/phone")
+
+        # Emit initial status and QR into polling queue
+        self._emit_event('status', state='idle')
+        qr_url = f"http://{ip}:{self.port}/phone"
+        qr_svg = self._generate_qr_svg(qr_url)
+        self._emit_event('qr_code', url=qr_url, svg=qr_svg)
 
         # Handle OS signals
         loop = asyncio.get_running_loop()
