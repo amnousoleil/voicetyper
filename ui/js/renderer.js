@@ -7,6 +7,7 @@ const state = {
   finalText: '',
   history: [],
   qrVisible: true,
+  hasError: false,
 };
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
@@ -40,6 +41,10 @@ const updateBannerTxt = $('update-banner-text');
 const updateBtn       = $('update-btn');
 const updateDismiss   = $('update-dismiss');
 const appVersionEl    = $('app-version');
+const errorBanner     = $('error-banner');
+const errorBannerTxt  = $('error-banner-text');
+const errorRetryBtn   = $('error-retry-btn');
+const errorDismissBtn = $('error-dismiss-btn');
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 (async function init() {
@@ -68,7 +73,7 @@ function bindEvents() {
     state.history = [];
     saveHistory();
     renderHistory();
-    toast('Historique effacé');
+    toast('Historique efface');
   });
 
   btnQrToggle.addEventListener('click', () => {
@@ -95,7 +100,7 @@ function bindEvents() {
     const url = qrUrl.textContent;
     if (url && url !== '—') {
       navigator.clipboard.writeText(url).catch(() => {});
-      toast('URL copiée !');
+      toast('URL copiee !');
     }
   });
 
@@ -107,6 +112,21 @@ function bindEvents() {
   updateDismiss.addEventListener('click', () => {
     updateBanner.classList.remove('visible');
   });
+
+  // Error banner buttons
+  if (errorRetryBtn) {
+    errorRetryBtn.addEventListener('click', () => {
+      hideErrorBanner();
+      window.voicetyper.retryEngine();
+      toast('Redemarrage du moteur...');
+    });
+  }
+
+  if (errorDismissBtn) {
+    errorDismissBtn.addEventListener('click', () => {
+      hideErrorBanner();
+    });
+  }
 }
 
 // ─── VoiceTyper API listeners ─────────────────────────────────────────────────
@@ -125,10 +145,21 @@ function setupVoicetyperListeners() {
 
   window.voicetyper.onEngineStatus((data) => {
     setEngineConnected(data.connected);
+    // Clear error banner when engine reconnects
+    if (data.connected) {
+      hideErrorBanner();
+      state.hasError = false;
+    }
   });
 
   window.voicetyper.onEngineError((data) => {
-    toast(`⚠️ ${data.message || 'Erreur moteur'}`, 4000);
+    // Show a single error banner instead of spamming toasts
+    showErrorBanner(data.message || 'Erreur moteur', false);
+  });
+
+  window.voicetyper.onEngineFatal((data) => {
+    // Fatal = engine gave up restarting — show prominent error with retry
+    showErrorBanner(data.message || 'Erreur fatale du moteur', true);
   });
 
   window.voicetyper.onModelDownload((data) => {
@@ -143,8 +174,8 @@ function setupVoicetyperListeners() {
 
   // Update listeners
   window.voicetyper.onUpdateAvailable((data) => {
-    updateBannerTxt.textContent = `Mise à jour disponible — v${data.version}`;
-    updateBtn.textContent = 'Téléchargement…';
+    updateBannerTxt.textContent = `Mise a jour disponible — v${data.version}`;
+    updateBtn.textContent = 'Telechargement...';
     updateBtn.disabled = true;
     updateBanner.classList.remove('ready', 'downloading');
     updateBanner.classList.add('visible', 'downloading');
@@ -152,22 +183,41 @@ function setupVoicetyperListeners() {
 
   window.voicetyper.onUpdateDownloadProgress((data) => {
     if (data.progress !== undefined) {
-      updateBannerTxt.textContent = `Téléchargement mise à jour… ${data.progress}%`;
+      updateBannerTxt.textContent = `Telechargement mise a jour... ${data.progress}%`;
     }
   });
 
   window.voicetyper.onUpdateReady((data) => {
-    updateBannerTxt.textContent = `Mise à jour v${data.version} prête — Redémarrez pour appliquer`;
+    updateBannerTxt.textContent = `Mise a jour v${data.version} prete — Redemarrez pour appliquer`;
     updateBtn.textContent = 'Installer';
     updateBtn.disabled = false;
     updateBanner.classList.remove('downloading');
     updateBanner.classList.add('visible', 'ready');
-    toast('Mise à jour téléchargée — cliquez sur Installer', 5000);
+    toast('Mise a jour telechargee — cliquez sur Installer', 5000);
   });
 
   window.voicetyper.onEngineUpdated((data) => {
-    toast(`Moteur mis à jour — v${data.version}`, 3000);
+    toast(`Moteur mis a jour — v${data.version}`, 3000);
   });
+}
+
+// ─── Error banner ─────────────────────────────────────────────────────────────
+function showErrorBanner(message, isFatal) {
+  if (!errorBanner) return;
+  state.hasError = true;
+  errorBannerTxt.textContent = message;
+  errorBanner.classList.add('visible');
+  if (isFatal) {
+    errorBanner.classList.add('fatal');
+  } else {
+    errorBanner.classList.remove('fatal');
+  }
+}
+
+function hideErrorBanner() {
+  if (!errorBanner) return;
+  state.hasError = false;
+  errorBanner.classList.remove('visible', 'fatal');
 }
 
 // ─── Dictation toggle ─────────────────────────────────────────────────────────
@@ -192,7 +242,6 @@ function handleTranscript(data) {
     transcriptInter.textContent = ' ' + text;
   }
 
-  // Auto scroll
   const box = transcriptFinal.parentElement;
   box.scrollTop = box.scrollHeight;
 }
@@ -202,7 +251,6 @@ function handleStatus(data) {
 
   state.isDictating = s === 'listening';
 
-  // Update button
   btnDictate.classList.toggle('listening', s === 'listening');
   btnDictate.classList.toggle('processing', s === 'processing');
 
@@ -210,15 +258,15 @@ function handleStatus(data) {
   const btnLabel = btnDictate.querySelector('.btn-label');
 
   if (s === 'listening') {
-    micIcon.textContent = '🔴';
+    micIcon.textContent = '\uD83D\uDD34';
     btnLabel.textContent = 'STOP';
     waveform.classList.add('active');
   } else if (s === 'processing') {
-    micIcon.textContent = '⏳';
+    micIcon.textContent = '\u23F3';
     btnLabel.textContent = 'TRAITEMENT';
     waveform.classList.remove('active');
   } else {
-    micIcon.textContent = '🎤';
+    micIcon.textContent = '\uD83C\uDFA4';
     btnLabel.textContent = 'DICTER';
     waveform.classList.remove('active');
   }
@@ -232,7 +280,7 @@ function handleQRCode(data) {
   if (svg) {
     qrImageWrap.innerHTML = svg;
   } else {
-    qrImageWrap.innerHTML = `<span style="color:#ccc;font-size:10px;">QR indisponible</span>`;
+    qrImageWrap.innerHTML = '<span style="color:#ccc;font-size:10px;">QR indisponible</span>';
   }
 
   qrUrl.textContent = url || '—';
@@ -243,17 +291,17 @@ function handleModelDownload(data) {
 
   if (status === 'downloading') {
     downloadSection.classList.add('visible');
-    downloadLabel.textContent = `Téléchargement ${model} (${size || '?'})… ${Math.round(progress || 0)}%`;
+    downloadLabel.textContent = `Telechargement ${model} (${size || '?'})... ${Math.round(progress || 0)}%`;
     downloadBar.style.width = `${progress || 0}%`;
   } else if (status === 'extracting') {
-    downloadLabel.textContent = `Extraction ${model}…`;
+    downloadLabel.textContent = `Extraction ${model}...`;
     downloadBar.style.width = '95%';
   } else if (status === 'done') {
-    downloadLabel.textContent = `${model} prêt !`;
+    downloadLabel.textContent = `${model} pret !`;
     downloadBar.style.width = '100%';
     setTimeout(() => downloadSection.classList.remove('visible'), 2000);
   } else if (status === 'error') {
-    downloadLabel.textContent = `Erreur téléchargement ${model}`;
+    downloadLabel.textContent = `Erreur telechargement ${model}`;
     downloadBar.style.background = '#ff3b30';
     setTimeout(() => downloadSection.classList.remove('visible'), 4000);
   }
@@ -262,7 +310,7 @@ function handleModelDownload(data) {
 function setEngineConnected(connected) {
   state.engineConnected = connected;
   engineStatusDot.className = 'dot ' + (connected ? 'connected' : 'error');
-  engineStatusTxt.textContent = connected ? 'Prêt' : 'Déconnecté';
+  engineStatusTxt.textContent = connected ? 'Pret' : 'Deconnecte';
   engineDot.className = connected ? 'ok' : 'error';
   engineDotLabel.textContent = connected ? 'En ligne' : 'Hors ligne';
   btnDictate.disabled = !connected;
@@ -284,7 +332,7 @@ async function requestPhoneUrl() {
     const url = await window.voicetyper.getPhoneUrl();
     qrUrl.textContent = url;
   } catch (e) {
-    // Engine not ready yet, will receive via onQRCode event
+    // Engine not ready yet
   }
 }
 
@@ -306,7 +354,7 @@ function addToHistory(text) {
 
 function renderHistory() {
   if (state.history.length === 0) {
-    historyList.innerHTML = '<div class="history-empty">Aucune dictée pour le moment</div>';
+    historyList.innerHTML = '<div class="history-empty">Aucune dictee pour le moment</div>';
     return;
   }
 
@@ -320,11 +368,10 @@ function renderHistory() {
     `)
     .join('');
 
-  // Click to copy
   historyList.querySelectorAll('.history-item').forEach(el => {
     el.addEventListener('click', () => {
       const text = el.dataset.text;
-      navigator.clipboard.writeText(text).then(() => toast('Copié !')).catch(() => {});
+      navigator.clipboard.writeText(text).then(() => toast('Copie !')).catch(() => {});
     });
   });
 }
@@ -363,7 +410,6 @@ function loadPreferences() {
     }
   } catch {}
 
-  // Apply loaded prefs to engine
   window.voicetyper.setLanguage(selectLang.value);
   window.voicetyper.setEngine(selectEngine.value);
 }

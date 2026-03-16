@@ -7,6 +7,7 @@ const os = require('os');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 
 // ─── Crash & Bug Reporter ─────────────────────────────────────────────────────
 const REPORT_URL = 'http://72.60.215.20:8766/report';
@@ -15,7 +16,7 @@ function sendBugReport(type, data) {
   try {
     const payload = JSON.stringify({
       type,
-      version: '1.0.0',
+      version: app.isReady() ? app.getVersion() : '1.0.0',
       platform: process.platform,
       arch: process.arch,
       timestamp: new Date().toISOString(),
@@ -48,7 +49,14 @@ const ENGINE_PORT = 7523;
 const ENGINE_HTTP_URL = `http://127.0.0.1:${ENGINE_PORT}`;
 
 const UPDATE_SERVER_URL = 'http://72.60.215.20:8766';
-const UPDATE_CHECK_DELAY_MS = 10000; // Check 10s after startup (more time for UI)
+const UPDATE_CHECK_DELAY_MS = 10000;
+
+// Platform key mapping for update server
+const PLATFORM_KEYS = {
+  win32: 'win',
+  darwin: 'mac',
+  linux: 'linux',
+};
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let mainWindow = null;
@@ -58,8 +66,14 @@ let engineReady = false;
 let isQuitting = false;
 let isDictating = false;
 let pendingUpdatePath = null;
+let pendingUpdateVersion = null;
 let engineStartAttempts = 0;
 const MAX_ENGINE_RESTARTS = 5;
+
+// Error dedup: avoid spamming the UI with repeated errors
+let lastErrorMessage = '';
+let lastErrorTime = 0;
+const ERROR_DEDUP_MS = 5000;
 
 // ─── Single instance lock ─────────────────────────────────────────────────────
 const gotTheLock = app.requestSingleInstanceLock();
@@ -86,10 +100,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', (e) => {
-  // Keep running in tray — do NOT quit
-  if (process.platform !== 'darwin') {
-    // On Windows/Linux, prevent default quit
-  }
+  // Keep running in tray
 });
 
 app.on('before-quit', () => {
@@ -123,7 +134,7 @@ function createMainWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true, // FIX: enable sandbox for security
+      sandbox: true,
       spellcheck: false,
     },
     icon: getAppIcon(),
@@ -146,14 +157,12 @@ function createMainWindow() {
     mainWindow = null;
   });
 
-  // FIX: Block navigation to external URLs (security)
   mainWindow.webContents.on('will-navigate', (e, url) => {
     if (!url.startsWith('file://')) {
       e.preventDefault();
     }
   });
 
-  // FIX: Block new window creation
   mainWindow.webContents.setWindowOpenHandler(() => {
     return { action: 'deny' };
   });
@@ -170,7 +179,6 @@ function getAppIcon() {
 function createTray() {
   let trayIcon;
 
-  // Try loading icon from file first
   const trayIconPath = path.join(__dirname, '..', 'build', 'icons', '16x16.png');
   try {
     if (fs.existsSync(trayIconPath)) {
@@ -179,7 +187,6 @@ function createTray() {
   } catch {}
 
   if (!trayIcon || trayIcon.isEmpty()) {
-    // Fallback: create a 16x16 programmatic icon
     const iconData = Buffer.from(
       'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAABHNCSVQICAgIfAhkiAAAAAlwSFlz' +
       'AAALEgAACxIB0t1+/AAAABx0RVh0U29mdHdhcmUAQWRvYmUgRmlyZXdvcmtzIENTNXG14zYAAAAW' +
@@ -207,7 +214,7 @@ function createTray() {
 
 function updateTrayMenu() {
   if (!tray) return;
-  const contextMenu = Menu.buildFromTemplate([
+  const menuItems = [
     {
       label: isDictating ? 'Stop Dictation' : 'Start Dictation (Ctrl+Alt+Space)',
       click: () => toggleDictation(),
@@ -224,13 +231,24 @@ function updateTrayMenu() {
         mainWindow && mainWindow.webContents.send('show-qr');
       },
     },
-    { type: 'separator' },
-    {
-      label: 'Quit',
-      click: () => { isQuitting = true; app.quit(); },
-    },
-  ]);
-  tray.setContextMenu(contextMenu);
+  ];
+
+  // Show pending update in tray menu
+  if (pendingUpdatePath && pendingUpdateVersion) {
+    menuItems.push({ type: 'separator' });
+    menuItems.push({
+      label: `Installer mise a jour v${pendingUpdateVersion}`,
+      click: () => installPendingUpdate(),
+    });
+  }
+
+  menuItems.push({ type: 'separator' });
+  menuItems.push({
+    label: 'Quit',
+    click: () => { isQuitting = true; app.quit(); },
+  });
+
+  tray.setContextMenu(Menu.buildFromTemplate(menuItems));
 }
 
 // ─── Global Shortcut ──────────────────────────────────────────────────────────
@@ -260,7 +278,6 @@ async function startPythonEngine() {
   const enginePath = getEnginePath();
   console.log('[Engine] Starting Python engine:', enginePath);
 
-  // FIX: verify the engine file exists
   if (!fs.existsSync(enginePath)) {
     console.error('[Engine] Engine not found at:', enginePath);
     sendToWindow('engine-error', { message: `Moteur introuvable: ${enginePath}` });
@@ -269,28 +286,39 @@ async function startPythonEngine() {
 
   const args = [`--port=${ENGINE_PORT}`];
 
-  // Resolve models path
-  const resourcesModels = path.join(process.resourcesPath || '', 'models');
-  const devModels = path.join(__dirname, '..', 'models');
-  const modelsPath = fs.existsSync(resourcesModels) ? resourcesModels : devModels;
+  // Resolve models path — check multiple locations
+  const resourcesPath = process.resourcesPath || '';
+  const candidateModelsPaths = [
+    path.join(resourcesPath, 'models'),
+    path.join(resourcesPath, '..', 'models'),
+    path.join(resourcesPath, 'engine', 'models'),
+    path.join(__dirname, '..', 'models'),
+  ];
+
+  let modelsPath = candidateModelsPaths[0]; // default
+  for (const candidate of candidateModelsPaths) {
+    if (fs.existsSync(candidate)) {
+      modelsPath = candidate;
+      console.log('[Engine] Found models directory:', modelsPath);
+      break;
+    }
+  }
 
   const engineEnv = {
     ...process.env,
     VOICETYPER_MODELS_PATH: modelsPath,
-    // FIX: ensure Python uses UTF-8 on Windows
+    VOICETYPER_RESOURCES_PATH: resourcesPath,
     PYTHONIOENCODING: 'utf-8',
     PYTHONUTF8: '1',
   };
 
   try {
     if (enginePath.endsWith('.py')) {
-      // FIX: try 'python' on Windows first (py launcher), then 'python3'
       const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
       pythonProcess = spawn(pythonCmd, [enginePath, ...args], {
         cwd: path.dirname(enginePath),
         env: engineEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
-        // FIX: on Windows, use windowsHide to prevent console flash
         windowsHide: true,
       });
     } else {
@@ -322,8 +350,8 @@ async function startPythonEngine() {
         engineStartAttempts++;
         if (engineStartAttempts >= MAX_ENGINE_RESTARTS) {
           console.error(`[Engine] Max restart attempts (${MAX_ENGINE_RESTARTS}) reached — giving up`);
-          sendToWindow('engine-error', {
-            message: 'Le moteur a crashe trop de fois. Redemarrez VoiceTyper.',
+          sendToWindow('engine-fatal', {
+            message: 'Le moteur a plante trop de fois. Redemarrez VoiceTyper.',
           });
           return;
         }
@@ -336,34 +364,28 @@ async function startPythonEngine() {
     pythonProcess.on('error', (err) => {
       console.error('[Engine] Spawn error:', err.message);
       pythonProcess = null;
-      // FIX: if spawn fails (Python not found), notify UI
-      sendToWindow('engine-error', {
+      sendToWindow('engine-fatal', {
         message: `Impossible de lancer le moteur: ${err.message}`,
       });
     });
 
-    // Give engine time to start
     await wait(2000);
-    // Reset restart counter on successful start
     engineStartAttempts = 0;
   } catch (err) {
     console.error('[Engine] Failed to start:', err);
-    sendToWindow('engine-error', { message: `Erreur demarrage: ${err.message}` });
+    sendToWindow('engine-fatal', { message: `Erreur demarrage: ${err.message}` });
   }
 }
 
 function getEnginePath() {
   const resourcesPath = process.resourcesPath || '';
   if (process.platform === 'win32') {
-    // Windows --onedir: engine/ contient dictee_engine.exe + ses deps
     const onedirPath = path.join(resourcesPath, 'engine', 'dictee_engine.exe');
     if (fs.existsSync(onedirPath)) return onedirPath;
   } else {
-    // macOS/Linux --onefile: binaire unique
     const binaryPath = path.join(resourcesPath, 'engine', 'dictee_engine');
     if (fs.existsSync(binaryPath)) return binaryPath;
   }
-  // Dev mode: script Python
   return path.join(__dirname, '..', 'engine', 'dictee_engine.py');
 }
 
@@ -371,9 +393,7 @@ function stopPythonEngine() {
   stopPolling();
   if (pythonProcess) {
     console.log('[Engine] Stopping Python process');
-
     if (process.platform === 'win32') {
-      // FIX: on Windows, SIGTERM is not reliable. Use taskkill instead.
       try {
         spawn('taskkill', ['/pid', String(pythonProcess.pid), '/T', '/F'], {
           windowsHide: true,
@@ -398,7 +418,7 @@ let pollErrorCount = 0;
 function startPolling() {
   if (pollTimer) return;
   console.log('[Poll] Starting HTTP polling on', ENGINE_HTTP_URL);
-  pollTimer = setInterval(pollEngine, 250); // FIX: 250ms is better balance
+  pollTimer = setInterval(pollEngine, 250);
 }
 
 function stopPolling() {
@@ -409,7 +429,7 @@ function pollEngine() {
   if (isQuitting) return;
 
   const req = http.get(`${ENGINE_HTTP_URL}/poll?since=${lastEventId}`, {
-    timeout: 2000, // FIX: add timeout to avoid hanging connections
+    timeout: 2000,
   }, (res) => {
     let data = '';
     res.on('data', chunk => data += chunk);
@@ -482,7 +502,8 @@ function handleEngineMessage(msg) {
 
     case 'error':
       console.error('[Engine] Error:', msg.message);
-      sendToWindow('engine-error', msg);
+      // Deduplicate errors to avoid UI spam
+      sendDedupedError(msg.message);
       break;
 
     case 'model_download':
@@ -490,9 +511,21 @@ function handleEngineMessage(msg) {
       break;
 
     default:
-      // Unknown type, ignore silently
       break;
   }
+}
+
+/**
+ * Send error to UI but deduplicate: same message within ERROR_DEDUP_MS is suppressed.
+ */
+function sendDedupedError(message) {
+  const now = Date.now();
+  if (message === lastErrorMessage && (now - lastErrorTime) < ERROR_DEDUP_MS) {
+    return; // suppress duplicate
+  }
+  lastErrorMessage = message;
+  lastErrorTime = now;
+  sendToWindow('engine-error', { message });
 }
 
 function sendToWindow(channel, data) {
@@ -509,8 +542,7 @@ function sendToWindow(channel, data) {
 function httpGet(url) {
   return new Promise((resolve, reject) => {
     const client = url.startsWith('https') ? https : http;
-    const req = client.get(url, { timeout: 10000 }, (res) => {
-      // FIX: handle redirects
+    const req = client.get(url, { timeout: 15000 }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         httpGet(res.headers.location).then(resolve).catch(reject);
         return;
@@ -553,48 +585,92 @@ async function checkForUpdates() {
       return;
     }
 
-    const platformInfo = latest.platforms && latest.platforms[process.platform];
+    // Map platform: win32 -> 'win', darwin -> 'mac', linux -> 'linux'
+    const platformKey = PLATFORM_KEYS[process.platform] || process.platform;
+    const platformInfo = latest.platforms && latest.platforms[platformKey];
     if (!platformInfo) {
-      console.log('[Updater] No update for platform:', process.platform);
+      console.log('[Updater] No update for platform:', process.platform, '(key:', platformKey, ')');
       return;
     }
+
+    // Build download URL from server base + file name
+    const downloadFilename = platformInfo.file || platformInfo.filename;
+    if (!downloadFilename) {
+      console.log('[Updater] No file specified in platform info');
+      return;
+    }
+    const downloadUrl = platformInfo.url || `${UPDATE_SERVER_URL}/updates/${encodeURIComponent(downloadFilename)}`;
+
+    console.log(`[Updater] Update available: v${latestVersion}, file: ${downloadFilename}`);
 
     sendToWindow('update-available', {
       version: latestVersion,
       releaseNotes: latest.releaseNotes || '',
-      platform: platformInfo,
+      size: platformInfo.size || 0,
     });
 
-    console.log('[Updater] Downloading update from', platformInfo.url);
-    downloadUpdate(platformInfo, latestVersion);
+    console.log('[Updater] Downloading update from', downloadUrl);
+    downloadUpdate({
+      url: downloadUrl,
+      filename: downloadFilename,
+      sha256: platformInfo.sha256 || null,
+      size: platformInfo.size || 0,
+    }, latestVersion);
   } catch (err) {
     console.error('[Updater] Check failed:', err.message);
+    sendBugReport('update_check_failed', { error: err.message });
   }
 }
 
-function downloadUpdate(platformInfo, version) {
+function downloadUpdate(info, version) {
   const tmpDir = app.getPath('temp');
-  const filename = platformInfo.filename || path.basename(platformInfo.url);
-  const destPath = path.join(tmpDir, filename);
+  const destPath = path.join(tmpDir, info.filename);
 
-  const client = platformInfo.url.startsWith('https') ? https : http;
+  // If the file already exists with the right size, skip download
+  try {
+    if (fs.existsSync(destPath)) {
+      const stat = fs.statSync(destPath);
+      if (info.size > 0 && stat.size === info.size) {
+        console.log('[Updater] File already downloaded:', destPath);
+        pendingUpdatePath = destPath;
+        pendingUpdateVersion = version;
+        updateTrayMenu();
+        sendToWindow('update-ready', { version, path: destPath });
+        return;
+      }
+      // Wrong size, delete and re-download
+      fs.unlinkSync(destPath);
+    }
+  } catch {}
 
+  const client = info.url.startsWith('https') ? https : http;
   const fileStream = fs.createWriteStream(destPath);
 
-  const request = client.get(platformInfo.url, { timeout: 60000 }, (res) => {
+  const request = client.get(info.url, { timeout: 120000 }, (res) => {
+    if (res.statusCode === 302 || res.statusCode === 301) {
+      fileStream.close();
+      try { fs.unlinkSync(destPath); } catch {}
+      // Follow redirect
+      downloadUpdate({ ...info, url: res.headers.location }, version);
+      return;
+    }
+
     if (res.statusCode !== 200) {
       console.error('[Updater] Download failed with status', res.statusCode);
       fileStream.close();
       try { fs.unlinkSync(destPath); } catch {}
+      sendToWindow('engine-error', { message: `Erreur telechargement mise a jour (HTTP ${res.statusCode})` });
       return;
     }
 
-    const totalSize = parseInt(res.headers['content-length'] || '0', 10);
+    const totalSize = parseInt(res.headers['content-length'] || '0', 10) || info.size;
     let downloaded = 0;
+    const hashStream = info.sha256 ? crypto.createHash('sha256') : null;
 
     res.on('data', (chunk) => {
       downloaded += chunk.length;
       fileStream.write(chunk);
+      if (hashStream) hashStream.update(chunk);
       if (totalSize > 0) {
         const progress = Math.round((downloaded / totalSize) * 100);
         sendToWindow('update-download-progress', { progress, downloaded, total: totalSize });
@@ -603,10 +679,25 @@ function downloadUpdate(platformInfo, version) {
 
     res.on('end', () => {
       fileStream.end(() => {
+        // Verify SHA256 if provided
+        if (hashStream && info.sha256) {
+          const actualHash = hashStream.digest('hex');
+          if (actualHash.toLowerCase() !== info.sha256.toLowerCase()) {
+            console.error(`[Updater] SHA256 mismatch! Expected: ${info.sha256}, Got: ${actualHash}`);
+            try { fs.unlinkSync(destPath); } catch {}
+            sendToWindow('engine-error', { message: 'Erreur: fichier de mise a jour corrompu (SHA256 invalide)' });
+            return;
+          }
+          console.log('[Updater] SHA256 verified OK');
+        }
+
         if (process.platform !== 'win32') {
           try { fs.chmodSync(destPath, 0o755); } catch {}
         }
+
         pendingUpdatePath = destPath;
+        pendingUpdateVersion = version;
+        updateTrayMenu();
         console.log('[Updater] Download complete:', destPath);
         sendToWindow('update-ready', { version, path: destPath });
       });
@@ -629,7 +720,59 @@ function downloadUpdate(platformInfo, version) {
     request.destroy();
     fileStream.close();
     try { fs.unlinkSync(destPath); } catch {}
+    console.error('[Updater] Download timed out');
   });
+}
+
+function installPendingUpdate() {
+  if (!pendingUpdatePath) {
+    console.warn('[Updater] install-update called but no pending update');
+    return;
+  }
+  if (!fs.existsSync(pendingUpdatePath)) {
+    console.error('[Updater] Update file disappeared:', pendingUpdatePath);
+    sendToWindow('engine-error', { message: 'Fichier de mise a jour introuvable.' });
+    pendingUpdatePath = null;
+    pendingUpdateVersion = null;
+    updateTrayMenu();
+    return;
+  }
+
+  console.log('[Updater] Installing update:', pendingUpdatePath);
+
+  if (process.platform === 'win32') {
+    // NSIS silent install: /S flag runs silently, app restarts automatically
+    const installerProcess = spawn(pendingUpdatePath, ['/S'], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+    installerProcess.unref();
+    // Give the installer a moment to start, then quit
+    setTimeout(() => {
+      isQuitting = true;
+      app.quit();
+    }, 1500);
+  } else if (process.platform === 'linux') {
+    shell.showItemInFolder(pendingUpdatePath);
+    dialog.showMessageBox(mainWindow, {
+      type: 'info',
+      title: 'Mise a jour prete',
+      message: `La nouvelle version a ete telechargee.\nFichier : ${pendingUpdatePath}\n\nFermez VoiceTyper et lancez le nouveau fichier.`,
+      buttons: ['Quitter VoiceTyper', 'Plus tard'],
+    }).then(({ response }) => {
+      if (response === 0) {
+        isQuitting = true;
+        app.quit();
+      }
+    });
+  } else {
+    // macOS
+    shell.openPath(pendingUpdatePath).then(() => {
+      isQuitting = true;
+      app.quit();
+    });
+  }
 }
 
 // ─── Hot-reload engine sidecar ────────────────────────────────────────────────
@@ -645,7 +788,8 @@ async function checkEngineUpdate() {
 
     if (compareVersions(currentEngineVersion, latest.version) <= 0) return;
 
-    const engineUrl = latest[process.platform];
+    const platformKey = PLATFORM_KEYS[process.platform] || process.platform;
+    const engineUrl = latest[platformKey];
     if (!engineUrl) return;
 
     console.log('[EngineUpdater] Downloading new engine from', engineUrl);
@@ -709,7 +853,6 @@ ipcMain.on('stop-dictation', () => {
 });
 
 ipcMain.on('set-language', (_, lang) => {
-  // FIX: validate language input
   const validLangs = ['fr', 'en', 'es', 'de', 'it', 'pt', 'ru', 'ar', 'zh', 'ja'];
   if (typeof lang === 'string' && validLangs.includes(lang)) {
     sendToEngine({ type: 'set_language', lang });
@@ -740,43 +883,7 @@ ipcMain.on('window-minimize', () => {
 });
 
 ipcMain.on('install-update', () => {
-  if (!pendingUpdatePath) {
-    console.warn('[Updater] install-update called but no pending update');
-    return;
-  }
-  if (!fs.existsSync(pendingUpdatePath)) {
-    console.error('[Updater] Update file disappeared:', pendingUpdatePath);
-    sendToWindow('engine-error', { message: 'Fichier de mise a jour introuvable.' });
-    return;
-  }
-
-  console.log('[Updater] Installing update:', pendingUpdatePath);
-  if (process.platform === 'win32') {
-    // Windows: launch the installer and quit
-    shell.openPath(pendingUpdatePath).then(() => {
-      isQuitting = true;
-      app.quit();
-    });
-  } else if (process.platform === 'linux') {
-    shell.showItemInFolder(pendingUpdatePath);
-    dialog.showMessageBox(mainWindow, {
-      type: 'info',
-      title: 'Mise a jour prete',
-      message: `La nouvelle version a ete telechargee.\nFichier : ${pendingUpdatePath}\n\nFermez VoiceTyper et lancez le nouveau fichier pour mettre a jour.`,
-      buttons: ['Quitter VoiceTyper', 'Plus tard'],
-    }).then(({ response }) => {
-      if (response === 0) {
-        isQuitting = true;
-        app.quit();
-      }
-    });
-  } else {
-    // macOS
-    shell.openPath(pendingUpdatePath).then(() => {
-      isQuitting = true;
-      app.quit();
-    });
-  }
+  installPendingUpdate();
 });
 
 ipcMain.handle('get-app-version', async () => {
@@ -785,6 +892,16 @@ ipcMain.handle('get-app-version', async () => {
 
 ipcMain.on('check-engine-update', () => {
   checkEngineUpdate();
+});
+
+ipcMain.on('retry-engine', () => {
+  console.log('[IPC] Retry engine requested');
+  engineStartAttempts = 0;
+  stopPythonEngine();
+  setTimeout(async () => {
+    await startPythonEngine();
+    startPolling();
+  }, 1000);
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────

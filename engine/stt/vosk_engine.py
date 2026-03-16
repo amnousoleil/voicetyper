@@ -169,24 +169,46 @@ class VoskEngine:
         import sys as _sys
         candidates = []
 
+        # 1. Environment variable (set by Electron main.js)
         env_path = os.environ.get('VOICETYPER_MODELS_PATH')
         if env_path:
             candidates.append(Path(env_path) / model_name)
+            candidates.append(Path(env_path))  # maybe env points directly to model dir
+
+        # 2. VOICETYPER_RESOURCES_PATH (process.resourcesPath from Electron)
+        res_path = os.environ.get('VOICETYPER_RESOURCES_PATH')
+        if res_path:
+            candidates.append(Path(res_path) / 'models' / model_name)
+            candidates.append(Path(res_path) / 'models')
+            candidates.append(Path(res_path) / 'engine' / 'models' / model_name)
 
         if getattr(_sys, 'frozen', False):
             exe_dir = Path(_sys.executable).parent
+            # --onedir: exe is in engine/ folder, models in ../models/
             candidates.append(exe_dir / 'models' / model_name)
+            candidates.append(exe_dir / '..' / 'models' / model_name)
             candidates.append(exe_dir.parent / 'models' / model_name)
-            # FIX: also check resources/models (Electron packaging)
+            # Electron packaged: resources/models/
+            candidates.append(exe_dir / '..' / 'resources' / 'models' / model_name)
             candidates.append(exe_dir.parent / 'resources' / 'models' / model_name)
+            # Electron NSIS install: resources at 2 levels up
+            candidates.append(exe_dir / '..' / '..' / 'models' / model_name)
+            candidates.append(exe_dir / '..' / '..' / 'resources' / 'models' / model_name)
 
+        # Dev mode
         src_root = Path(__file__).parent.parent.parent
         candidates.append(src_root / 'models' / model_name)
 
+        # User home fallback
+        candidates.append(Path.home() / '.voicetyper' / 'models' / model_name)
+
         for c in candidates:
-            if c.exists():
-                log.info(f"Found bundled model at {c}")
-                return c
+            resolved = c.resolve()
+            if resolved.exists() and resolved.is_dir():
+                log.info("Found bundled model at %s", resolved)
+                return resolved
+
+        log.warning("No bundled model found. Searched: %s", [str(c) for c in candidates])
         return None
 
     def _ensure_model(self) -> str:

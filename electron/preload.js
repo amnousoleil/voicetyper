@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld('voicetyper', {
     ipcRenderer.send('set-engine', engine);
   },
 
+  retryEngine() {
+    ipcRenderer.send('retry-engine');
+  },
+
   // ── Queries ───────────────────────────────────────────────────────────────
   async getPhoneUrl() {
     return ipcRenderer.invoke('get-phone-url');
@@ -69,6 +73,12 @@ contextBridge.exposeInMainWorld('voicetyper', {
     const handler = (_, data) => callback(data);
     ipcRenderer.on('engine-error', handler);
     return () => ipcRenderer.removeListener('engine-error', handler);
+  },
+
+  onEngineFatal(callback) {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('engine-fatal', handler);
+    return () => ipcRenderer.removeListener('engine-fatal', handler);
   },
 
   onModelDownload(callback) {
