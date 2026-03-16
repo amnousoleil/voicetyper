@@ -203,12 +203,29 @@ class VoskEngine:
         candidates.append(Path.home() / '.voicetyper' / 'models' / model_name)
 
         for c in candidates:
-            resolved = c.resolve()
-            if resolved.exists() and resolved.is_dir():
-                log.info("Found bundled model at %s", resolved)
-                return resolved
+            try:
+                resolved = c.resolve()
+                exists = resolved.exists()
+                is_dir = resolved.is_dir() if exists else False
+                log.info("Checking model path: %s -> exists=%s is_dir=%s", resolved, exists, is_dir)
+                if exists and is_dir:
+                    # Verify the model is not corrupted — check for key files
+                    mdl_file = resolved / 'am' / 'final.mdl'
+                    conf_file = resolved / 'conf' / 'mfcc.conf'
+                    if mdl_file.exists() and conf_file.exists():
+                        mdl_size = mdl_file.stat().st_size
+                        log.info("Model validated: final.mdl=%d bytes at %s", mdl_size, resolved)
+                        if mdl_size > 1000000:  # Must be > 1MB
+                            return resolved
+                        else:
+                            log.warning("Model file too small (%d bytes), likely corrupted", mdl_size)
+                    else:
+                        log.warning("Model directory exists but missing key files: am/final.mdl=%s conf/mfcc.conf=%s",
+                                    mdl_file.exists(), conf_file.exists())
+            except Exception as e:
+                log.debug("Error checking path %s: %s", c, e)
 
-        log.warning("No bundled model found. Searched: %s", [str(c) for c in candidates])
+        log.warning("No valid bundled model found. Searched %d paths.", len(candidates))
         return None
 
     def _ensure_model(self) -> str:
