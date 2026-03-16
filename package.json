@@ -1,5 +1,5 @@
 {
-  "name": "voicetyper",
+  "name": "girivoicetyper",
   "version": "1.0.0",
   "description": "Universal voice-to-text — type with your voice anywhere",
   "main": "electron/main.js",
@@ -19,7 +19,7 @@
     "electron-log": "^5.4.3",
     "electron-updater": "^6.8.3",
     "qrcode": "^1.5.3",
-    "ws": "^8.16.0"
+    "ws": "^8.19.0"
   },
   "author": "VoiceTyper",
   "build": {
@@ -29,5 +29,6 @@
         "url": "http://72.60.215.20:8766/releases/"
       }
     ]
-  }
+  },
+  "productName": "GiriVoiceTyper"
 }

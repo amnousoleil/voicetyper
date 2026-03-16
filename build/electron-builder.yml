@@ -1,5 +1,5 @@
-appId: com.voicetyper.app
-productName: VoiceTyper
+appId: com.girivoicetyper.app
+productName: GiriVoiceTyper
 copyright: Copyright © 2024 VoiceTyper
 
 directories:
@@ -35,7 +35,7 @@ nsis:
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: VoiceTyper
+  shortcutName: GiriVoiceTyper
 
 # ─── macOS ────────────────────────────────────────────────────────────────────
 mac:
@@ -73,7 +73,7 @@ linux:
   icon: build/icons/
   category: Utility
   description: Universal voice-to-text — type with your voice anywhere
-  artifactName: VoiceTyper-${version}.AppImage
+  artifactName: GiriVoiceTyper-${version}.AppImage
   desktop:
     StartupNotify: true
     Categories: Utility;Accessibility;

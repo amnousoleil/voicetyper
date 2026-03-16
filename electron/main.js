@@ -3,7 +3,7 @@
 const { app, BrowserWindow, Tray, Menu, globalShortcut, ipcMain, nativeImage, shell, dialog } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
-const WebSocket = require('ws');
+const WS = require('ws');
 const os = require('os');
 const fs = require('fs');
 const https = require('https');
@@ -287,7 +287,7 @@ function connectToEngine() {
   }
 
   console.log('[WS] Connecting to engine at', ENGINE_WS_URL);
-  const ws = new WebSocket(ENGINE_WS_URL);
+  const ws = new WS(ENGINE_WS_URL);
   engineWs = ws;
 
   ws.on('open', () => {
@@ -333,7 +333,7 @@ function scheduleReconnect() {
 }
 
 function sendToEngine(msg) {
-  if (engineWs && engineWs.readyState === WebSocket.OPEN) {
+  if (engineWs && engineWs.readyState === WS.OPEN) {
     engineWs.send(JSON.stringify(msg));
   } else {
     console.warn('[WS] Cannot send — engine not connected');
