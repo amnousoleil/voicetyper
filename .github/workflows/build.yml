@@ -68,7 +68,7 @@ jobs:
         run: |
           cd engine
           pyinstaller --onefile --name dictee_engine --paths . --hidden-import vosk --hidden-import sounddevice --hidden-import pyperclip --hidden-import aiohttp --hidden-import aiohttp_cors --hidden-import segno --hidden-import pynput --exclude-module torch --exclude-module faster_whisper --clean dictee_engine.py
-          cp dist/dictee_engine ../bin/dictee_engine-mac
+          cp dist/dictee_engine ../bin/dictee_engine
 
       - name: Install Node deps
         run: npm install
