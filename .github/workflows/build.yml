@@ -22,10 +22,10 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python deps
-        run: |
-          pip install pyinstaller aiohttp aiohttp-cors vosk sounddevice numpy pyperclip segno pynput pywin32
+        run: pip install pyinstaller aiohttp aiohttp-cors vosk sounddevice numpy pyperclip segno pynput pywin32
 
       - name: Build Python sidecar
+        shell: cmd
         run: |
           cd engine
           pyinstaller --onefile --name dictee_engine --paths . --hidden-import vosk --hidden-import sounddevice --hidden-import pyperclip --hidden-import aiohttp --hidden-import aiohttp_cors --hidden-import segno --hidden-import pynput --hidden-import pynput.keyboard --hidden-import pynput.mouse --hidden-import win32api --hidden-import win32con --exclude-module torch --exclude-module faster_whisper --exclude-module tensorflow --exclude-module scipy --exclude-module matplotlib --exclude-module pandas --clean dictee_engine.py
@@ -33,13 +33,6 @@ jobs:
 
       - name: Install Node deps
         run: npm install
-
-      - name: Download Vosk model
-        run: |
-          mkdir -p models
-          curl -L "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip" -o vosk-fr.zip
-          tar -xf vosk-fr.zip -C models
-          del vosk-fr.zip
 
       - name: Build Windows exe
         env:
@@ -79,13 +72,6 @@ jobs:
 
       - name: Install Node deps
         run: npm install
-
-      - name: Download Vosk model
-        run: |
-          mkdir -p models
-          curl -L "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip" -o vosk-fr.zip
-          unzip -q vosk-fr.zip -d models
-          rm vosk-fr.zip
 
       - name: Build macOS dmg
         env:
