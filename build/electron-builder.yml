@@ -9,7 +9,9 @@ directories:
 files:
   - electron/**
   - ui/**
-  - "!node_modules/**"
+  - "!node_modules/**/test/**"
+  - "!node_modules/**/docs/**"
+  - "!node_modules/**/.github/**"
 
 extraResources:
   - from: models/
