@@ -1,6 +1,13 @@
 # ─── Core dependencies ────────────────────────────────────────────────────────
 aiohttp>=3.9.0
-aiohttp-cors>=0.7.0
+
+# ─── aiohttp transitive dependencies ──────────────────────────────────────────
+multidict>=6.0.0
+yarl>=1.9.0
+aiosignal>=1.3.0
+frozenlist>=1.4.0
+async-timeout>=4.0.0
+attrs>=23.0.0
 
 # ─── Audio capture ────────────────────────────────────────────────────────────
 sounddevice>=0.4.6
@@ -19,12 +26,12 @@ segno>=1.6.0
 pyinstaller>=6.0
 
 # ─── Platform-specific ────────────────────────────────────────────────────────
-# Windows only:
+# Windows only (clipboard + keyboard injection):
 pywin32>=306; sys_platform == "win32"
 
 # Linux fallback keyboard injection (if xdotool/ydotool not available):
 pynput>=1.7.6; sys_platform == "linux"
 
-# ─── Optional: high-accuracy mode (uncomment to enable Whisper) ───────────────
+# ─── Optional: high-accuracy mode ─────────────────────────────────────────────
 # faster-whisper>=1.0.0
-# torch>=2.0.0  # For GPU acceleration (optional, CPU works without it)
+# torch>=2.0.0

@@ -1,6 +1,6 @@
 appId: com.girivoicetyper.app
 productName: GiriVoiceTyper
-copyright: Copyright © 2024 VoiceTyper
+copyright: Copyright 2024 VoiceTyper
 
 directories:
   output: release
@@ -32,11 +32,13 @@ win:
       to: engine/dictee_engine.exe
 
 nsis:
-  oneClick: true
+  oneClick: false
+  allowToChangeInstallationDirectory: true
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: GiriVoiceTyper
+  runAfterFinish: true
 
 # ─── macOS ────────────────────────────────────────────────────────────────────
 mac:
@@ -44,6 +46,7 @@ mac:
     - target: dmg
       arch:
         - arm64
+        - x64
   icon: build/icons/icon.png
   category: public.app-category.productivity
   hardenedRuntime: true
@@ -90,6 +93,7 @@ deb:
     - libxtst6
     - libnss3
     - xdotool
+    - libportaudio2
 
 # ─── Auto-update ──────────────────────────────────────────────────────────────
 publish:

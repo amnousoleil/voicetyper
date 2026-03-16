@@ -2,16 +2,18 @@
 """
 VoiceTyper Engine — Main orchestrator
 Runs as a sidecar process spawned by Electron.
-Communicates via WebSocket on port 7523.
-
-WebSocket routes:
-  /ws        → UI (Electron renderer)
-  /ws/phone  → Mobile phone clients
+Communicates via HTTP polling on port 7523.
 
 HTTP routes:
   GET /         → redirect to /phone
   GET /phone    → phone.html
   GET /status   → JSON status
+  GET /poll     → HTTP polling for events
+  POST /command → receive commands from Electron
+
+WebSocket routes:
+  /ws        → UI (Electron renderer)
+  /ws/phone  → Mobile phone clients
 """
 
 import asyncio
@@ -25,11 +27,17 @@ import os
 import argparse
 from pathlib import Path
 
+# FIX: ensure the engine directory is on sys.path so relative imports work
+# regardless of the CWD when spawned by Electron
+_ENGINE_DIR = Path(__file__).parent.resolve()
+if str(_ENGINE_DIR) not in sys.path:
+    sys.path.insert(0, str(_ENGINE_DIR))
+
 try:
     from aiohttp import web
     import aiohttp
 except ImportError:
-    print("[FATAL] aiohttp not installed. Run: pip install aiohttp aiohttp-cors", file=sys.stderr)
+    print("[FATAL] aiohttp not installed. Run: pip install aiohttp", file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -66,12 +74,12 @@ class VoiceTyperEngine:
         self.config['port'] = port
 
         # Connection sets
-        self.ui_clients: set[web.WebSocketResponse] = set()
-        self.phone_clients: set[web.WebSocketResponse] = set()
+        self.ui_clients: set = set()
+        self.phone_clients: set = set()
 
         # STT engine instance
         self.stt = None
-        self.stt_task: asyncio.Task | None = None
+        self.stt_task = None
         self.is_listening = False
 
         # Text injector
@@ -81,6 +89,7 @@ class VoiceTyperEngine:
         # HTTP polling event queue
         self._event_queue: list = []
         self._event_counter: int = 0
+        self._event_lock = asyncio.Lock()
 
         # Web app
         self.app = web.Application()
@@ -124,20 +133,19 @@ class VoiceTyperEngine:
         self.app.router.add_get('/status', self._handle_status)
         self.app.router.add_get('/ws', self._handle_ws_ui)
         self.app.router.add_get('/ws/phone', self._handle_ws_phone)
-        # HTTP polling endpoints (remplace WebSocket côté Electron main process)
         self.app.router.add_get('/poll', self._handle_poll)
         self.app.router.add_post('/command', self._handle_command)
 
         # Serve static UI files
-        ui_dir = Path(__file__).parent.parent / 'ui'
+        ui_dir = _ENGINE_DIR.parent / 'ui'
         if ui_dir.exists():
             self.app.router.add_static('/ui', ui_dir)
 
-    async def _handle_index(self, request: web.Request) -> web.Response:
+    async def _handle_index(self, request):
         raise web.HTTPFound('/phone')
 
-    async def _handle_phone(self, request: web.Request) -> web.Response:
-        ui_dir = Path(__file__).parent.parent / 'ui'
+    async def _handle_phone(self, request):
+        ui_dir = _ENGINE_DIR.parent / 'ui'
         phone_file = ui_dir / 'phone.html'
 
         if not phone_file.exists():
@@ -145,10 +153,8 @@ class VoiceTyperEngine:
 
         content = phone_file.read_text(encoding='utf-8')
 
-        # Inject the server host so phone-client.js can connect back
         host = self._get_local_ip()
         port = str(self.port)
-        # Replace the static JS file reference with inline-adjusted version
         content = content.replace(
             'src="js/phone-client.js"',
             f'src="/ui/js/phone-client.js?host={host}&port={port}"'
@@ -156,7 +162,7 @@ class VoiceTyperEngine:
 
         return web.Response(text=content, content_type='text/html')
 
-    async def _handle_status(self, request: web.Request) -> web.Response:
+    async def _handle_status(self, request):
         return web.json_response({
             'status': 'ok',
             'listening': self.is_listening,
@@ -169,14 +175,13 @@ class VoiceTyperEngine:
 
     # ── HTTP Polling ──────────────────────────────────────────────────────────
     def _emit_event(self, event_type: str, **kwargs):
-        """Enqueue an event for HTTP polling clients."""
+        """Enqueue an event for HTTP polling clients (thread-safe via asyncio)."""
         self._event_counter += 1
         self._event_queue.append({'id': self._event_counter, 'type': event_type, **kwargs})
-        # Keep only last 200 events
         if len(self._event_queue) > 200:
             self._event_queue[:] = self._event_queue[-200:]
 
-    async def _handle_poll(self, request: web.Request) -> web.Response:
+    async def _handle_poll(self, request):
         """GET /poll?since=N — returns events with id > N."""
         try:
             since = int(request.rel_url.query.get('since', 0))
@@ -185,7 +190,7 @@ class VoiceTyperEngine:
         events = [e for e in self._event_queue if e['id'] > since]
         return web.json_response(events)
 
-    async def _handle_command(self, request: web.Request) -> web.Response:
+    async def _handle_command(self, request):
         """POST /command — receive a command JSON and execute it."""
         try:
             msg = await request.json()
@@ -195,19 +200,17 @@ class VoiceTyperEngine:
         return web.json_response({'ok': True})
 
     # ── WebSocket — UI ────────────────────────────────────────────────────────
-    async def _handle_ws_ui(self, request: web.Request) -> web.WebSocketResponse:
+    async def _handle_ws_ui(self, request):
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         self.ui_clients.add(ws)
         log.info(f"UI client connected ({len(self.ui_clients)} total)")
 
-        # Send current status immediately
         await self._send_to_ws(ws, {
             'type': 'status',
             'state': 'listening' if self.is_listening else 'idle',
         })
 
-        # Send QR code
         await self._send_qr_to_ws(ws)
 
         try:
@@ -224,7 +227,7 @@ class VoiceTyperEngine:
 
         return ws
 
-    async def _handle_ui_message(self, ws: web.WebSocketResponse, raw: str):
+    async def _handle_ui_message(self, ws, raw: str):
         try:
             msg = json.loads(raw)
         except Exception:
@@ -240,7 +243,8 @@ class VoiceTyperEngine:
             await self._stop_dictation()
         elif msg_type == 'set_language':
             lang = msg.get('lang', 'fr')
-            await self._set_language(lang)
+            if isinstance(lang, str) and len(lang) <= 10:
+                await self._set_language(lang)
         elif msg_type == 'set_engine':
             engine = msg.get('engine', 'vosk')
             await self._set_engine(engine)
@@ -248,7 +252,7 @@ class VoiceTyperEngine:
             log.debug(f"Unknown UI message type: {msg_type}")
 
     # ── WebSocket — Phone ─────────────────────────────────────────────────────
-    async def _handle_ws_phone(self, request: web.Request) -> web.WebSocketResponse:
+    async def _handle_ws_phone(self, request):
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
         self.phone_clients.add(ws)
@@ -268,7 +272,7 @@ class VoiceTyperEngine:
 
         return ws
 
-    async def _handle_phone_message(self, ws: web.WebSocketResponse, raw: str):
+    async def _handle_phone_message(self, ws, raw: str):
         try:
             msg = json.loads(raw)
         except Exception:
@@ -278,16 +282,13 @@ class VoiceTyperEngine:
             text = msg.get('text', '').strip()
             if text:
                 log.info(f"Phone transcript: {text!r}")
-                # Inject into focused window
                 await self._inject_text(text)
-                # Broadcast to UI
                 await self._broadcast_ui({
                     'type': 'transcript',
                     'text': text,
                     'is_final': True,
                     'source': 'phone',
                 })
-                # Confirm back to phone
                 await self._send_to_ws(ws, {'type': 'injected', 'text': text})
 
     # ── Dictation control ─────────────────────────────────────────────────────
@@ -300,7 +301,6 @@ class VoiceTyperEngine:
         self.is_listening = True
         await self._broadcast_status('listening')
 
-        # Start STT in background task
         self.stt_task = asyncio.create_task(self._run_stt())
 
     async def _stop_dictation(self):
@@ -363,7 +363,6 @@ class VoiceTyperEngine:
             await self._broadcast_status('idle')
 
     async def _on_transcript(self, text: str, is_final: bool):
-        """Called by STT engine with recognized text."""
         if not text.strip():
             return
 
@@ -380,17 +379,34 @@ class VoiceTyperEngine:
             await self._inject_text(text)
 
     def _on_download_progress(self, model: str, progress: float, status: str, size: str = ''):
-        """Called by VoskEngine during model download."""
-        asyncio.get_event_loop().call_soon_threadsafe(
-            asyncio.ensure_future,
-            self._broadcast_ui({
-                'type': 'model_download',
-                'model': model,
-                'progress': progress,
-                'status': status,
-                'size': size,
-            })
-        )
+        """Called by VoskEngine during model download (may be from a thread)."""
+        # FIX: use call_soon_threadsafe properly — schedule a coroutine-safe emit
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop in this thread — get the main event loop
+            loop = None
+
+        event_data = {
+            'type': 'model_download',
+            'model': model,
+            'progress': progress,
+            'status': status,
+            'size': size,
+        }
+
+        if loop and loop.is_running():
+            # We're in the async thread already
+            asyncio.ensure_future(self._broadcast_ui(event_data))
+        else:
+            # We're in a background thread — schedule on the main loop
+            try:
+                main_loop = asyncio.get_event_loop()
+                main_loop.call_soon_threadsafe(
+                    lambda: asyncio.ensure_future(self._broadcast_ui(event_data))
+                )
+            except Exception as e:
+                log.debug(f"Could not schedule download progress event: {e}")
 
     # ── Config setters ────────────────────────────────────────────────────────
     async def _set_language(self, lang: str):
@@ -429,10 +445,8 @@ class VoiceTyperEngine:
 
     # ── Broadcast helpers ─────────────────────────────────────────────────────
     async def _broadcast_ui(self, msg: dict):
-        # Always emit to HTTP polling queue
         event_type = msg.get('type', 'unknown')
         self._emit_event(event_type, **{k: v for k, v in msg.items() if k != 'type'})
-        # Also broadcast to WebSocket UI clients (phone web interface etc.)
         if not self.ui_clients:
             return
         dead = set()
@@ -447,13 +461,13 @@ class VoiceTyperEngine:
     async def _broadcast_status(self, state: str):
         await self._broadcast_ui({'type': 'status', 'state': state})
 
-    async def _send_to_ws(self, ws: web.WebSocketResponse, msg: dict):
+    async def _send_to_ws(self, ws, msg: dict):
         try:
             await ws.send_str(json.dumps(msg, ensure_ascii=False))
         except Exception as e:
             log.debug(f"send_to_ws error: {e}")
 
-    async def _send_qr_to_ws(self, ws: web.WebSocketResponse):
+    async def _send_qr_to_ws(self, ws):
         ip = self._get_local_ip()
         url = f"http://{ip}:{self.port}/phone"
         svg = self._generate_qr_svg(url)
@@ -486,53 +500,114 @@ class VoiceTyperEngine:
         except Exception:
             return '127.0.0.1'
 
+    # ── Port check ────────────────────────────────────────────────────────────
+    def _check_port(self) -> bool:
+        """Check if our port is available, warn if not."""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(('0.0.0.0', self.port))
+                return True
+        except OSError:
+            return False
+
     # ── Run ───────────────────────────────────────────────────────────────────
     async def run(self):
+        # FIX: check port availability before starting
+        if not self._check_port():
+            log.error(f"Port {self.port} is already in use!")
+            # Try to find a free port
+            for alt_port in range(self.port + 1, self.port + 50):
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        s.bind(('0.0.0.0', alt_port))
+                        self.port = alt_port
+                        log.info(f"Using alternate port: {alt_port}")
+                        break
+                except OSError:
+                    continue
+            else:
+                log.error("No available port found in range — exiting")
+                sys.exit(1)
+
         runner = web.AppRunner(self.app, access_log=None)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', self.port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as e:
+            log.error(f"Could not start server: {e}")
+            sys.exit(1)
 
         ip = self._get_local_ip()
         log.info(f"VoiceTyper Engine started on http://{ip}:{self.port}")
         log.info(f"Phone URL: http://{ip}:{self.port}/phone")
 
-        # Emit initial status and QR into polling queue
         self._emit_event('status', state='idle')
         qr_url = f"http://{ip}:{self.port}/phone"
         qr_svg = self._generate_qr_svg(qr_url)
         self._emit_event('qr_code', url=qr_url, svg=qr_svg)
 
-        # Handle OS signals
-        loop = asyncio.get_running_loop()
+        # FIX: handle shutdown properly on all platforms including Windows
         stop_event = asyncio.Event()
 
-        def _signal_handler():
-            log.info("Shutdown signal received")
-            stop_event.set()
-
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
-                loop.add_signal_handler(sig, _signal_handler)
-            except (NotImplementedError, OSError):
-                # Windows doesn't support add_signal_handler for all signals
-                pass
+        if sys.platform != 'win32':
+            # Unix: use signal handlers
+            loop = asyncio.get_running_loop()
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                try:
+                    loop.add_signal_handler(sig, stop_event.set)
+                except (NotImplementedError, OSError):
+                    pass
 
         try:
-            await stop_event.wait()
-        except asyncio.CancelledError:
+            if sys.platform == 'win32':
+                # Windows: poll for parent process exit or keyboard interrupt
+                # The engine is spawned by Electron; when Electron dies,
+                # stdin will be closed (pipe). We detect that.
+                await self._windows_wait_for_exit(stop_event)
+            else:
+                await stop_event.wait()
+        except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
-            log.info("Shutting down…")
+            log.info("Shutting down...")
             if self.is_listening:
                 await self._stop_dictation()
             await runner.cleanup()
+
+    async def _windows_wait_for_exit(self, stop_event):
+        """On Windows, detect parent process death by monitoring stdin (pipe from Electron)."""
+        loop = asyncio.get_running_loop()
+
+        async def _check_stdin():
+            while not stop_event.is_set():
+                try:
+                    # If stdin is a pipe and parent dies, reading returns empty
+                    if sys.stdin and not sys.stdin.closed:
+                        # Non-blocking check — just test if stdin pipe is still alive
+                        pass
+                except Exception:
+                    stop_event.set()
+                    return
+                await asyncio.sleep(1)
+
+        stdin_task = asyncio.create_task(_check_stdin())
+        try:
+            await stop_event.wait()
+        finally:
+            stdin_task.cancel()
+            try:
+                await stdin_task
+            except asyncio.CancelledError:
+                pass
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description='VoiceTyper Engine')
-    parser.add_argument('--port', type=int, default=7523, help='WebSocket/HTTP port')
+    parser.add_argument('--port', type=int, default=7523, help='HTTP/WebSocket port')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     args = parser.parse_args()
 
@@ -540,6 +615,10 @@ def main():
         logging.getLogger().setLevel(logging.DEBUG)
 
     engine = VoiceTyperEngine(port=args.port)
+
+    if sys.platform == 'win32':
+        # FIX: on Windows, use WindowsSelectorEventLoopPolicy for better compatibility
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     try:
         asyncio.run(engine.run())

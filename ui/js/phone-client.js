@@ -1,9 +1,26 @@
 'use strict';
 
 // ─── Config from URL ──────────────────────────────────────────────────────────
-const params = new URLSearchParams(window.location.search);
-const serverHost = params.get('host') || window.location.hostname;
-const serverPort = params.get('port') || window.location.port || '7523';
+// FIX: the phone page is served by the Python engine which injects host/port
+// as query params on the <script> tag URL, not the page URL. We need to read
+// from both the page URL params AND try document.currentScript.
+const pageParams = new URLSearchParams(window.location.search);
+let serverHost = pageParams.get('host') || window.location.hostname;
+let serverPort = pageParams.get('port') || window.location.port || '7523';
+
+// Also try to extract from the script tag's src URL (set by dictee_engine.py)
+try {
+  const scriptSrc = document.currentScript && document.currentScript.src;
+  if (scriptSrc) {
+    const scriptUrl = new URL(scriptSrc);
+    const scriptParams = new URLSearchParams(scriptUrl.search);
+    if (scriptParams.get('host')) serverHost = scriptParams.get('host');
+    if (scriptParams.get('port')) serverPort = scriptParams.get('port');
+  }
+} catch (e) {
+  // Ignore — will use defaults
+}
+
 const WS_URL = `ws://${serverHost}:${serverPort}/ws/phone`;
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────────
@@ -38,13 +55,19 @@ const MAX_RECONNECT = 30;
 function connect() {
   if (ws && ws.readyState === WebSocket.OPEN) return;
 
-  ws = new WebSocket(WS_URL);
+  try {
+    ws = new WebSocket(WS_URL);
+  } catch (e) {
+    console.error('[WS] Failed to create WebSocket:', e);
+    scheduleReconnect();
+    return;
+  }
 
   ws.addEventListener('open', () => {
-    console.log('[WS] Connected');
+    console.log('[WS] Connected to', WS_URL);
     reconnectCount = 0;
     clearTimeout(reconnectTimer);
-    setStatus('connected', 'Connecté');
+    setStatus('connected', 'Connecte');
     btnRecord.disabled = false;
     errorScreen.style.display = 'none';
     appEl.style.display = 'flex';
@@ -52,14 +75,14 @@ function connect() {
 
   ws.addEventListener('close', (e) => {
     console.log('[WS] Closed', e.code);
-    setStatus('error', 'Déconnecté');
+    setStatus('error', 'Deconnecte');
     btnRecord.disabled = true;
     if (isRecording) stopRecognition();
     scheduleReconnect();
   });
 
   ws.addEventListener('error', () => {
-    setStatus('error', 'Erreur réseau');
+    setStatus('error', 'Erreur reseau');
   });
 
   ws.addEventListener('message', (evt) => {
@@ -105,8 +128,8 @@ function createRecognition() {
     isRecording = true;
     btnRecord.classList.add('recording');
     btnRecord.querySelector('.lbl').textContent = 'STOP';
-    setStatus('recording', 'Écoute…');
-    transcriptArea.innerHTML = '<span class="placeholder">Parlez…</span>';
+    setStatus('recording', 'Ecoute...');
+    transcriptArea.innerHTML = '<span class="placeholder">Parlez...</span>';
   };
 
   r.onresult = (event) => {
@@ -123,14 +146,12 @@ function createRecognition() {
       }
     }
 
-    // Render
     let html = '';
-    if (final) html += `<span class="final">${escapeHtml(final)}</span>`;
-    if (interim) html += `<span class="interim"> ${escapeHtml(interim)}</span>`;
-    if (!html) html = '<span class="placeholder">Parlez…</span>';
+    if (final) html += '<span class="final">' + escapeHtml(final) + '</span>';
+    if (interim) html += '<span class="interim"> ' + escapeHtml(interim) + '</span>';
+    if (!html) html = '<span class="placeholder">Parlez...</span>';
     transcriptArea.innerHTML = html;
 
-    // Send final results to desktop
     if (final.trim()) {
       sendWS({
         type: 'transcript',
@@ -144,18 +165,27 @@ function createRecognition() {
   r.onerror = (event) => {
     console.error('[STT] Error:', event.error);
     if (event.error === 'not-allowed') {
-      transcriptArea.innerHTML = `<span class="placeholder" style="color:#ff3b30">Microphone refusé — autorisez l'accès au micro</span>`;
+      transcriptArea.innerHTML = '<span class="placeholder" style="color:#ff3b30">Microphone refuse — autorisez l\'acces au micro</span>';
+      // FIX: stop recording if permission denied
+      isRecording = false;
+      onStopRecognition();
     } else if (event.error === 'no-speech') {
-      // Restart silently
+      // Restart silently — handled by onend
     } else if (event.error === 'network') {
-      transcriptArea.innerHTML = `<span class="placeholder" style="color:#ff3b30">Erreur réseau STT</span>`;
+      transcriptArea.innerHTML = '<span class="placeholder" style="color:#ff3b30">Erreur reseau STT</span>';
+    } else if (event.error === 'aborted') {
+      // User stopped, normal flow
     }
   };
 
   r.onend = () => {
-    // Restart if still supposed to be recording
     if (isRecording) {
-      try { r.start(); } catch {}
+      // FIX: add small delay before restart to avoid rapid restart loops
+      setTimeout(() => {
+        if (isRecording) {
+          try { r.start(); } catch {}
+        }
+      }, 100);
     } else {
       onStopRecognition();
     }
@@ -173,6 +203,8 @@ function startRecognition() {
     recognition.start();
   } catch (e) {
     console.error('[STT] Start failed:', e);
+    isRecording = false;
+    onStopRecognition();
   }
 }
 
@@ -187,8 +219,8 @@ function onStopRecognition() {
   isRecording = false;
   btnRecord.classList.remove('recording');
   btnRecord.querySelector('.lbl').textContent = 'DICTER';
-  setStatus('connected', 'Connecté');
-  transcriptArea.innerHTML = '<span class="placeholder">Appuyez sur le bouton pour dicter…</span>';
+  setStatus('connected', 'Connecte');
+  transcriptArea.innerHTML = '<span class="placeholder">Appuyez sur le bouton pour dicter...</span>';
 }
 
 // ─── Button ───────────────────────────────────────────────────────────────────
@@ -230,5 +262,5 @@ function escapeHtml(str) {
 }
 
 // ─── Start ────────────────────────────────────────────────────────────────────
-setStatus('', 'Connexion…');
+setStatus('', 'Connexion...');
 connect();

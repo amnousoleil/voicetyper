@@ -18,7 +18,7 @@ from typing import Callable, Awaitable, Optional
 log = logging.getLogger('voicetyper.vosk')
 
 # ─── Model registry ───────────────────────────────────────────────────────────
-VOSK_MODELS: dict[str, dict] = {
+VOSK_MODELS = {
     'fr': {
         'small': ('vosk-model-small-fr-0.22',
                   'https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip',
@@ -100,12 +100,12 @@ class VoskEngine:
         models_dir: Optional[str] = None,
         on_download_progress: Optional[Callable] = None,
     ):
-        self.lang = lang.split('-')[0].lower()  # 'fr-FR' → 'fr'
+        self.lang = lang.split('-')[0].lower()
         self.model_size = model_size
         self.models_dir = Path(models_dir) if models_dir else Path.home() / '.voicetyper' / 'models'
         self.on_download_progress = on_download_progress
         self._stop_event = threading.Event()
-        self._audio_queue: queue.Queue = queue.Queue()
+        self._audio_queue = queue.Queue()
         self._stream = None
         self._recognizer = None
         self._model = None
@@ -113,7 +113,20 @@ class VoskEngine:
     # ── Public API ────────────────────────────────────────────────────────────
     async def start(self, on_result: OnResultCallback):
         """Start microphone capture and streaming transcription."""
-        import sounddevice as sd
+        # FIX: import sounddevice here with proper error message
+        try:
+            import sounddevice as sd
+        except ImportError:
+            raise RuntimeError(
+                "sounddevice not installed. Run: pip install sounddevice\n"
+                "On Windows, you may also need to install the VC++ redistributable."
+            )
+        except OSError as e:
+            raise RuntimeError(
+                f"sounddevice failed to load audio backend: {e}\n"
+                "On Linux, install portaudio: sudo apt-get install libportaudio2\n"
+                "On Windows, ensure VC++ redistributable is installed."
+            )
 
         # Ensure model is available
         model_path = await asyncio.get_event_loop().run_in_executor(
@@ -127,7 +140,6 @@ class VoskEngine:
 
         self._stop_event.clear()
 
-        # Start audio stream in a thread
         loop = asyncio.get_event_loop()
         audio_thread = threading.Thread(
             target=self._audio_capture_thread,
@@ -136,7 +148,6 @@ class VoskEngine:
         )
         audio_thread.start()
 
-        # Process audio queue in async loop
         try:
             await self._process_audio_loop(on_result)
         finally:
@@ -154,22 +165,21 @@ class VoskEngine:
 
     # ── Internals ─────────────────────────────────────────────────────────────
     def _find_bundled_model(self, model_name: str) -> Optional[Path]:
-        """Look for a pre-bundled model in known locations (packaged AppImage or dev)."""
+        """Look for a pre-bundled model in known locations."""
+        import sys as _sys
         candidates = []
 
-        # 1. Env variable set by Electron at launch
         env_path = os.environ.get('VOICETYPER_MODELS_PATH')
         if env_path:
             candidates.append(Path(env_path) / model_name)
 
-        # 2. Alongside the frozen binary (PyInstaller: sys.executable dir)
-        import sys
-        if getattr(sys, 'frozen', False):
-            exe_dir = Path(sys.executable).parent
+        if getattr(_sys, 'frozen', False):
+            exe_dir = Path(_sys.executable).parent
             candidates.append(exe_dir / 'models' / model_name)
             candidates.append(exe_dir.parent / 'models' / model_name)
+            # FIX: also check resources/models (Electron packaging)
+            candidates.append(exe_dir.parent / 'resources' / 'models' / model_name)
 
-        # 3. Relative to this source file (dev mode)
         src_root = Path(__file__).parent.parent.parent
         candidates.append(src_root / 'models' / model_name)
 
@@ -183,7 +193,6 @@ class VoskEngine:
         """Download and extract model if not present. Returns model directory path."""
         lang_models = VOSK_MODELS.get(self.lang)
         if not lang_models:
-            # Fallback to English
             log.warning(f"No Vosk model for language '{self.lang}', falling back to English")
             lang_models = VOSK_MODELS['en']
 
@@ -193,7 +202,6 @@ class VoskEngine:
 
         model_name, model_url, model_size_str = size_models
 
-        # Check for bundled model first (no download needed)
         bundled = self._find_bundled_model(model_name)
         if bundled:
             return str(bundled)
@@ -204,22 +212,41 @@ class VoskEngine:
             log.info(f"Model already present at {model_dir}")
             return str(model_dir)
 
-        # Download
         log.info(f"Downloading model {model_name} ({model_size_str}) from {model_url}")
         self.models_dir.mkdir(parents=True, exist_ok=True)
         zip_path = self.models_dir / f"{model_name}.zip"
 
-        self._download_model(model_url, zip_path, model_name, model_size_str)
+        try:
+            self._download_model(model_url, zip_path, model_name, model_size_str)
+        except Exception as e:
+            # FIX: clean up partial download on error
+            if zip_path.exists():
+                try:
+                    zip_path.unlink()
+                except Exception:
+                    pass
+            if self.on_download_progress:
+                self.on_download_progress(model_name, 0, 'error', model_size_str)
+            raise RuntimeError(f"Model download failed: {e}")
 
-        # Extract
-        log.info(f"Extracting {zip_path}…")
+        log.info(f"Extracting {zip_path}...")
         if self.on_download_progress:
             self.on_download_progress(model_name, 95.0, 'extracting', model_size_str)
 
-        with zipfile.ZipFile(zip_path, 'r') as zf:
-            zf.extractall(self.models_dir)
-
-        zip_path.unlink(missing_ok=True)
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                zf.extractall(self.models_dir)
+        except Exception as e:
+            # FIX: clean up corrupted extraction
+            if model_dir.exists():
+                import shutil
+                try:
+                    shutil.rmtree(model_dir)
+                except Exception:
+                    pass
+            raise RuntimeError(f"Model extraction failed: {e}")
+        finally:
+            zip_path.unlink(missing_ok=True)
 
         if self.on_download_progress:
             self.on_download_progress(model_name, 100.0, 'done', model_size_str)
@@ -244,14 +271,14 @@ class VoskEngine:
         """Load Vosk model (blocking, run in executor)."""
         try:
             from vosk import Model, KaldiRecognizer, SetLogLevel
-            SetLogLevel(-1)  # Suppress Vosk logs
+            SetLogLevel(-1)
             self._model = Model(model_path)
             self._recognizer = KaldiRecognizer(self._model, self.SAMPLE_RATE)
             self._recognizer.SetWords(True)
         except ImportError:
             raise RuntimeError("vosk package not installed. Run: pip install vosk")
 
-    def _audio_capture_thread(self, loop: asyncio.AbstractEventLoop):
+    def _audio_capture_thread(self, loop):
         """Capture microphone audio and put chunks in queue."""
         import sounddevice as sd
         import numpy as np
@@ -262,8 +289,11 @@ class VoskEngine:
             if status:
                 log.debug(f"Audio status: {status}")
             if not self._stop_event.is_set():
-                audio_bytes = (indata[:, 0] * 32767).astype('int16').tobytes()
-                self._audio_queue.put_nowait(audio_bytes)
+                audio_bytes = (indata[:, 0] * 32767).astype(np.int16).tobytes()
+                try:
+                    self._audio_queue.put_nowait(audio_bytes)
+                except queue.Full:
+                    pass  # Drop frame if queue is full
 
         try:
             with sd.InputStream(
@@ -272,29 +302,44 @@ class VoskEngine:
                 dtype='float32',
                 blocksize=BLOCK_SIZE,
                 callback=_callback,
-            ):
+            ) as stream:
+                self._stream = stream
                 log.info("Microphone capture started")
                 self._stop_event.wait()
-        except Exception as e:
-            log.error(f"Audio capture error: {e}")
+        except sd.PortAudioError as e:
+            log.error(f"PortAudio error: {e}")
+            log.error("Make sure a microphone is connected and accessible.")
+            # FIX: notify the async side about the error
             asyncio.run_coroutine_threadsafe(
-                asyncio.sleep(0),  # Wake up the async loop
+                self._notify_audio_error(str(e)),
                 loop,
             )
+        except Exception as e:
+            log.error(f"Audio capture error: {e}")
 
         log.info("Microphone capture stopped")
+
+    async def _notify_audio_error(self, error_msg: str):
+        """Placeholder — the STT task will detect no audio and time out."""
+        pass
 
     async def _process_audio_loop(self, on_result: OnResultCallback):
         """Consume audio queue and feed to Vosk recognizer."""
         loop = asyncio.get_event_loop()
+        consecutive_empty = 0
 
         while not self._stop_event.is_set():
-            # Drain queue with brief timeout so we can check stop_event
             try:
                 chunk = await loop.run_in_executor(
-                    None, lambda: self._audio_queue.get(timeout=0.1)
+                    None, lambda: self._audio_queue.get(timeout=0.2)
                 )
+                consecutive_empty = 0
             except queue.Empty:
+                consecutive_empty += 1
+                # FIX: if no audio for 30 seconds, something is wrong
+                if consecutive_empty > 150:  # 150 * 0.2s = 30s
+                    log.warning("No audio received for 30 seconds — microphone may be disconnected")
+                    consecutive_empty = 0
                 continue
             except Exception:
                 break
