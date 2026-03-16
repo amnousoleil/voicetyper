@@ -138,6 +138,31 @@ contextBridge.exposeInMainWorld('voicetyper', {
     return () => ipcRenderer.removeListener('engine-updated', handler);
   },
 
+  // ── Always-On mode ─────────────────────────────────────────────────────────
+  toggleAlwaysOn(enabled) {
+    ipcRenderer.send('toggle-always-on', enabled);
+  },
+
+  resumeAlwaysOn() {
+    ipcRenderer.send('resume-always-on');
+  },
+
+  async getAlwaysOnStatus() {
+    return ipcRenderer.invoke('get-always-on-status');
+  },
+
+  onAlwaysOnStatus(callback) {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('always-on-status', handler);
+    return () => ipcRenderer.removeListener('always-on-status', handler);
+  },
+
+  onVoiceCommand(callback) {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('voice-command', handler);
+    return () => ipcRenderer.removeListener('voice-command', handler);
+  },
+
   installUpdate() {
     ipcRenderer.send('install-update');
   },

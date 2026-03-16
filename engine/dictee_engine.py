@@ -379,7 +379,10 @@ class VoiceTyperEngine:
     # Voice commands — spoken words that control the app instead of being typed
     VOICE_COMMANDS = {
         'stop': ['stop dictée', 'stop dicté', 'arrête dictée', 'arrête dicté',
-                 'stop dictation', 'arrête toi', 'stop stop', 'pause dictée'],
+                 'stop dictation', 'arrête toi', 'stop stop', 'pause dictée',
+                 'pause', 'stop'],
+        'resume': ['reprends', 'reprends dictée', 'continue', 'continue dictée',
+                   'resume', 'go', 'c\'est parti'],
         'newline': ['nouvelle ligne', 'à la ligne', 'retour à la ligne', 'new line'],
         'period': ['point final'],
         'comma': ['virgule'],
@@ -439,6 +442,9 @@ class VoiceTyperEngine:
         elif cmd == 'exclamation':
             await self._inject_text('! ')
             await self._broadcast_ui({'type': 'voice_command', 'command': 'exclamation', 'message': '!'})
+        elif cmd == 'resume':
+            await self._broadcast_ui({'type': 'voice_command', 'command': 'resume', 'message': 'Dictée reprise'})
+            # Resume is handled by the Electron side — just notify
 
     def _on_download_progress(self, model: str, progress: float, status: str, size: str = ''):
         """Called by VoskEngine during model download (may be from a thread)."""

@@ -518,6 +518,91 @@
     #engine-dot.ok { background: var(--accent-green); }
     #engine-dot.error { background: var(--accent-red); }
 
+    /* ─── Always-On mode ─────────────────────────────────────────────────────── */
+    #always-on-section {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 12px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    #always-on-section .ao-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    #always-on-section .ao-label .ao-icon {
+      font-size: 16px;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: #333;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+
+    .toggle-slider::before {
+      content: '';
+      position: absolute;
+      width: 18px; height: 18px;
+      left: 3px; bottom: 3px;
+      background: #888;
+      border-radius: 50%;
+      transition: transform 0.3s, background 0.3s;
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: var(--accent-green);
+    }
+
+    .toggle-switch input:checked + .toggle-slider::before {
+      transform: translateX(20px);
+      background: #fff;
+    }
+
+    #always-on-status-text {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-left: 8px;
+    }
+
+    .ao-paused-banner {
+      display: none;
+      padding: 6px 12px;
+      background: #2a2a1a;
+      border: 1px solid #5a5a27;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      color: #e8e860;
+      text-align: center;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .ao-paused-banner:hover { background: #3a3a1a; }
+    .ao-paused-banner.visible { display: block; }
+
     /* ─── Toasts ────────────────────────────────────────────────────────────── */
     #toast-container {
       position: fixed;
@@ -743,6 +828,22 @@
       </div>
     </div>
 
+    <!-- Always-On mode -->
+    <div id="always-on-section">
+      <div class="ao-label">
+        <span class="ao-icon">🔄</span>
+        <span>Always-On</span>
+        <span id="always-on-status-text"></span>
+      </div>
+      <label class="toggle-switch">
+        <input type="checkbox" id="toggle-always-on">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div id="ao-paused-banner" class="ao-paused-banner" title="Cliquez pour reprendre">
+      ⏸ Dictée en pause — cliquez ici ou dites "reprends" pour continuer
+    </div>
+
     <!-- Model download progress -->
     <div id="download-section" class="card">
       <div class="card-header">
@@ -812,6 +913,302 @@
 <!-- Toast container -->
 <div id="toast-container"></div>
 
-<script src="js/renderer.js"></script>
+<script>
+'use strict';
+(function() {
+  const $ = (sel) => document.querySelector(sel);
+
+  // ── Elements ─────────────────────────────────────────────────────────────
+  const btnDictate = $('#btn-dictate');
+  const btnLabel = btnDictate.querySelector('.btn-label');
+  const micIcon = btnDictate.querySelector('.mic-icon');
+  const waveform = $('#waveform');
+  const transcriptFinal = $('#transcript-final');
+  const transcriptInterim = $('#transcript-interim');
+  const engineDot = $('#engine-status-dot');
+  const engineText = $('#engine-status-text');
+  const engineFootDot = $('#engine-dot');
+  const engineFootLabel = $('#engine-dot-label');
+  const selectLang = $('#select-lang');
+  const selectEngine = $('#select-engine');
+  const selectDevice = $('#select-device');
+  const downloadSection = $('#download-section');
+  const downloadProgress = $('#download-progress');
+  const downloadLabel = $('#download-label');
+  const updateBanner = $('#update-banner');
+  const updateBannerText = $('#update-banner-text');
+  const updateBtn = $('#update-btn');
+  const updateDismiss = $('#update-dismiss');
+  const errorBanner = $('#error-banner');
+  const errorBannerText = $('#error-banner-text');
+  const qrSection = $('#qr-section');
+  const qrImageWrap = $('#qr-image-wrap');
+  const qrUrl = $('#qr-url');
+  const historyList = $('#history-list');
+  const appVersion = $('#app-version');
+  const toggleAlwaysOn = $('#toggle-always-on');
+  const aoStatusText = $('#always-on-status-text');
+  const aoPausedBanner = $('#ao-paused-banner');
+
+  // ── State ────────────────────────────────────────────────────────────────
+  let listening = false;
+  let history = [];
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  voicetyper.getAppVersion().then(v => { appVersion.textContent = 'v' + v; });
+  voicetyper.listDevices();
+  voicetyper.getAlwaysOnStatus().then(s => {
+    toggleAlwaysOn.checked = s.active;
+    updateAlwaysOnUI(s);
+  });
+
+  // ── Dictation button ──────────────────────────────────────────────────────
+  btnDictate.addEventListener('click', () => {
+    if (listening) voicetyper.stopDictation();
+    else voicetyper.startDictation();
+  });
+
+  // ── Language / Engine ─────────────────────────────────────────────────────
+  selectLang.addEventListener('change', () => voicetyper.setLanguage(selectLang.value));
+  selectEngine.addEventListener('change', () => voicetyper.setEngine(selectEngine.value));
+  selectDevice.addEventListener('change', () => {
+    const val = selectDevice.value;
+    voicetyper.setDevice(val === '' ? null : parseInt(val, 10));
+  });
+
+  // ── Window controls ───────────────────────────────────────────────────────
+  $('#btn-close').addEventListener('click', () => voicetyper.closeWindow());
+  $('#btn-minimize').addEventListener('click', () => voicetyper.minimizeWindow());
+
+  // ── Clear buttons ─────────────────────────────────────────────────────────
+  $('#btn-clear-transcript').addEventListener('click', () => {
+    transcriptFinal.textContent = '';
+    transcriptInterim.textContent = '';
+  });
+  $('#btn-clear-history').addEventListener('click', () => {
+    history = [];
+    renderHistory();
+  });
+
+  // ── QR toggle ─────────────────────────────────────────────────────────────
+  const btnQrToggle = $('#btn-qr-toggle');
+  btnQrToggle.addEventListener('click', () => {
+    const inner = qrSection.querySelector('.qr-inner');
+    if (inner.style.display === 'none') {
+      inner.style.display = 'flex';
+      btnQrToggle.textContent = 'Masquer';
+      btnQrToggle.classList.add('active');
+    } else {
+      inner.style.display = 'none';
+      btnQrToggle.textContent = 'Afficher';
+      btnQrToggle.classList.remove('active');
+    }
+  });
+
+  // ── Always-On toggle ──────────────────────────────────────────────────────
+  toggleAlwaysOn.addEventListener('change', () => {
+    voicetyper.toggleAlwaysOn(toggleAlwaysOn.checked);
+  });
+  aoPausedBanner.addEventListener('click', () => {
+    voicetyper.resumeAlwaysOn();
+  });
+
+  function updateAlwaysOnUI(status) {
+    toggleAlwaysOn.checked = status.active;
+    if (status.active && !status.paused) {
+      aoStatusText.textContent = 'Actif';
+      aoStatusText.style.color = 'var(--accent-green)';
+      aoPausedBanner.classList.remove('visible');
+    } else if (status.active && status.paused) {
+      aoStatusText.textContent = 'En pause';
+      aoStatusText.style.color = '#e8e860';
+      aoPausedBanner.classList.add('visible');
+    } else {
+      aoStatusText.textContent = '';
+      aoPausedBanner.classList.remove('visible');
+    }
+  }
+
+  // ── Update banner ─────────────────────────────────────────────────────────
+  updateBtn.addEventListener('click', () => voicetyper.installUpdate());
+  updateDismiss.addEventListener('click', () => {
+    updateBanner.classList.remove('visible', 'ready', 'downloading');
+  });
+
+  // ── Error banner ──────────────────────────────────────────────────────────
+  $('#error-retry-btn').addEventListener('click', () => {
+    errorBanner.classList.remove('visible', 'fatal');
+    voicetyper.retryEngine();
+  });
+  $('#error-dismiss-btn').addEventListener('click', () => {
+    errorBanner.classList.remove('visible', 'fatal');
+  });
+
+  // ── QR URL click ──────────────────────────────────────────────────────────
+  qrUrl.addEventListener('click', () => {
+    if (qrUrl.textContent && qrUrl.textContent !== '—') {
+      navigator.clipboard.writeText(qrUrl.textContent).then(() => showToast('URL copiee !'));
+    }
+  });
+
+  // ── Event listeners ───────────────────────────────────────────────────────
+  voicetyper.onTranscript((data) => {
+    if (data.is_final) {
+      transcriptFinal.textContent += data.text + ' ';
+      transcriptInterim.textContent = '';
+      addToHistory(data.text);
+      // Auto-scroll
+      const box = $('#transcript-box');
+      box.scrollTop = box.scrollHeight;
+    } else {
+      transcriptInterim.textContent = data.text;
+    }
+  });
+
+  voicetyper.onStatus((data) => {
+    listening = data.state === 'listening';
+    btnDictate.classList.toggle('listening', listening);
+    waveform.classList.toggle('active', listening);
+    btnLabel.textContent = listening ? 'STOP' : 'DICTER';
+  });
+
+  voicetyper.onEngineStatus((data) => {
+    const connected = data.connected;
+    engineDot.className = 'dot' + (connected ? ' connected' : '');
+    engineText.textContent = connected ? 'Connecte' : 'Deconnecte';
+    engineFootDot.className = connected ? 'ok' : 'error';
+    engineFootLabel.textContent = connected ? 'Moteur OK' : 'Hors ligne';
+  });
+
+  voicetyper.onEngineError((data) => {
+    errorBannerText.textContent = data.message || 'Erreur moteur';
+    errorBanner.classList.add('visible');
+    errorBanner.classList.remove('fatal');
+  });
+
+  voicetyper.onEngineFatal((data) => {
+    errorBannerText.textContent = data.message || 'Erreur fatale';
+    errorBanner.classList.add('visible', 'fatal');
+  });
+
+  voicetyper.onModelDownload((data) => {
+    if (data.status === 'done') {
+      downloadSection.classList.remove('visible');
+      return;
+    }
+    downloadSection.classList.add('visible');
+    downloadProgress.style.width = Math.round(data.progress || 0) + '%';
+    if (data.status === 'extracting') {
+      downloadLabel.textContent = 'Extraction du modele...';
+    } else {
+      downloadLabel.textContent = 'Telechargement: ' + Math.round(data.progress || 0) + '% (' + (data.size || '') + ')';
+    }
+  });
+
+  voicetyper.onDevicesList((data) => {
+    selectDevice.innerHTML = '';
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = 'Par defaut du systeme';
+    selectDevice.appendChild(defaultOpt);
+    (data.devices || []).forEach(dev => {
+      const opt = document.createElement('option');
+      opt.value = String(dev.id);
+      opt.textContent = dev.name + (dev.is_default ? ' (defaut)' : '');
+      selectDevice.appendChild(opt);
+    });
+    if (data.selected_id !== null && data.selected_id !== undefined) {
+      selectDevice.value = String(data.selected_id);
+    }
+  });
+
+  voicetyper.onQRCode((data) => {
+    qrSection.classList.add('visible');
+    if (data.svg) qrImageWrap.innerHTML = data.svg;
+    if (data.url) qrUrl.textContent = data.url;
+  });
+
+  voicetyper.onShowQR(() => {
+    qrSection.classList.add('visible');
+    const inner = qrSection.querySelector('.qr-inner');
+    inner.style.display = 'flex';
+    btnQrToggle.textContent = 'Masquer';
+    btnQrToggle.classList.add('active');
+  });
+
+  voicetyper.onUpdateAvailable((data) => {
+    updateBannerText.textContent = 'Mise a jour v' + data.version + ' disponible...';
+    updateBanner.classList.add('visible', 'downloading');
+    updateBanner.classList.remove('ready');
+    updateBtn.style.display = 'none';
+  });
+
+  voicetyper.onUpdateDownloadProgress((data) => {
+    const pct = data.progress || 0;
+    updateBannerText.textContent = 'Telechargement: ' + pct + '%';
+  });
+
+  voicetyper.onUpdateReady((data) => {
+    updateBannerText.textContent = 'Mise a jour v' + data.version + ' prete !';
+    updateBanner.classList.add('visible', 'ready');
+    updateBanner.classList.remove('downloading');
+    updateBtn.style.display = '';
+    updateBtn.textContent = 'Installer & redemarrer';
+    showToast('Mise a jour v' + data.version + ' prete — cliquez pour installer');
+  });
+
+  voicetyper.onAlwaysOnStatus((data) => {
+    updateAlwaysOnUI(data);
+  });
+
+  voicetyper.onVoiceCommand((data) => {
+    if (data.command === 'stop') {
+      showToast('Dictee arretee par commande vocale');
+    } else if (data.command === 'resume') {
+      showToast('Dictee reprise');
+    } else if (data.message) {
+      showToast(data.message);
+    }
+  });
+
+  // ── History ───────────────────────────────────────────────────────────────
+  function addToHistory(text) {
+    const now = new Date();
+    const time = now.getHours().toString().padStart(2, '0') + ':' + now.getMinutes().toString().padStart(2, '0');
+    history.unshift({ text, time });
+    if (history.length > 50) history.pop();
+    renderHistory();
+  }
+
+  function renderHistory() {
+    if (history.length === 0) {
+      historyList.innerHTML = '<div class="history-empty">Aucune dictee pour le moment</div>';
+      return;
+    }
+    historyList.innerHTML = history.map(h =>
+      '<div class="history-item">' +
+        '<span class="history-time">' + h.time + '</span>' +
+        '<span class="history-text">' + escapeHtml(h.text) + '</span>' +
+      '</div>'
+    ).join('');
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  // ── Toasts ────────────────────────────────────────────────────────────────
+  function showToast(msg) {
+    const container = $('#toast-container');
+    const toast = document.createElement('div');
+    toast.className = 'toast';
+    toast.textContent = msg;
+    container.appendChild(toast);
+    setTimeout(() => { toast.remove(); }, 4000);
+  }
+})();
+</script>
 </body>
 </html>

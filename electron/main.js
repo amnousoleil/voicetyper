@@ -8,6 +8,7 @@ const fs = require('fs');
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
+const { clipboard } = require('electron');
 
 // ─── Crash & Bug Reporter ─────────────────────────────────────────────────────
 const REPORT_URL = 'http://72.60.215.20:8766/report';
@@ -67,6 +68,8 @@ let isQuitting = false;
 let isDictating = false;
 let pendingUpdatePath = null;
 let pendingUpdateVersion = null;
+let alwaysOnMode = false;
+let alwaysOnPaused = false;
 let engineStartAttempts = 0;
 const MAX_ENGINE_RESTARTS = 5;
 
@@ -97,6 +100,31 @@ app.whenReady().then(async () => {
   await startPythonEngine();
   startPolling();
   setTimeout(() => checkForUpdates(), UPDATE_CHECK_DELAY_MS);
+
+  // Load always-on preference
+  const configPath = path.join(app.getPath('userData'), 'voicetyper-config.json');
+  try {
+    if (fs.existsSync(configPath)) {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      if (cfg.alwaysOn) {
+        alwaysOnMode = true;
+        console.log('[AlwaysOn] Mode enabled from config — will auto-start dictation');
+        // Wait for engine to be ready, then start dictation
+        const waitForEngine = setInterval(() => {
+          if (engineReady) {
+            clearInterval(waitForEngine);
+            console.log('[AlwaysOn] Engine ready — starting dictation automatically');
+            sendToEngine({ type: 'start_dictation' });
+            sendToWindow('always-on-status', { active: true, paused: false });
+          }
+        }, 1000);
+        // Give up after 60 seconds
+        setTimeout(() => clearInterval(waitForEngine), 60000);
+      }
+    }
+  } catch (e) {
+    console.error('[AlwaysOn] Config load error:', e.message);
+  }
 });
 
 app.on('window-all-closed', (e) => {
@@ -219,6 +247,24 @@ function updateTrayMenu() {
       label: isDictating ? 'Stop Dictation' : 'Start Dictation (Ctrl+Alt+Space)',
       click: () => toggleDictation(),
     },
+    {
+      label: alwaysOnMode ? (alwaysOnPaused ? 'Always-On: EN PAUSE' : 'Always-On: ACTIF') : 'Activer Always-On',
+      type: 'checkbox',
+      checked: alwaysOnMode,
+      click: () => {
+        const newState = !alwaysOnMode;
+        alwaysOnMode = newState;
+        alwaysOnPaused = false;
+        saveAlwaysOnConfig(newState);
+        if (newState && !isDictating && engineReady) {
+          sendToEngine({ type: 'start_dictation' });
+        } else if (!newState && isDictating) {
+          sendToEngine({ type: 'stop_dictation' });
+        }
+        sendToWindow('always-on-status', { active: newState, paused: false });
+        updateTrayMenu();
+      },
+    },
     { type: 'separator' },
     {
       label: 'Show VoiceTyper',
@@ -266,10 +312,24 @@ function registerShortcuts() {
 }
 
 function toggleDictation() {
-  if (isDictating) {
-    sendToEngine({ type: 'stop_dictation' });
+  if (alwaysOnMode) {
+    // In always-on mode, Ctrl+Alt+Space toggles pause
+    alwaysOnPaused = !alwaysOnPaused;
+    if (alwaysOnPaused) {
+      console.log('[AlwaysOn] Paused by shortcut');
+      sendToEngine({ type: 'stop_dictation' });
+      sendToWindow('always-on-status', { active: true, paused: true });
+    } else {
+      console.log('[AlwaysOn] Resumed by shortcut');
+      sendToEngine({ type: 'start_dictation' });
+      sendToWindow('always-on-status', { active: true, paused: false });
+    }
   } else {
-    sendToEngine({ type: 'start_dictation' });
+    if (isDictating) {
+      sendToEngine({ type: 'stop_dictation' });
+    } else {
+      sendToEngine({ type: 'start_dictation' });
+    }
   }
 }
 
@@ -296,13 +356,15 @@ async function startPythonEngine() {
   ];
 
   let modelsPath = candidateModelsPaths[0]; // default
+  console.log('[Engine] Searching for models in candidates:');
   for (const candidate of candidateModelsPaths) {
-    if (fs.existsSync(candidate)) {
+    const exists = fs.existsSync(candidate);
+    console.log('[Engine]   ', candidate, exists ? 'FOUND' : 'not found');
+    if (exists && modelsPath === candidateModelsPaths[0]) {
       modelsPath = candidate;
-      console.log('[Engine] Found models directory:', modelsPath);
-      break;
     }
   }
+  console.log('[Engine] Using models path:', modelsPath);
 
   const engineEnv = {
     ...process.env,
@@ -488,12 +550,34 @@ function handleEngineMessage(msg) {
   switch (msg.type) {
     case 'transcript':
       sendToWindow('transcript', msg);
+      // Always-On: auto-type final transcripts into active app
+      if (alwaysOnMode && !alwaysOnPaused && msg.is_final && msg.text) {
+        autoTypeText(msg.text);
+      }
+      break;
+
+    case 'voice_command':
+      sendToWindow('voice-command', msg);
+      // Handle always-on voice commands
+      if (alwaysOnMode && msg.command === 'stop') {
+        alwaysOnPaused = true;
+        sendToWindow('always-on-status', { active: true, paused: true });
+      }
       break;
 
     case 'status':
       isDictating = msg.state === 'listening';
       updateTrayMenu();
       sendToWindow('status', msg);
+      // Always-On: if dictation stopped unexpectedly and not paused, restart
+      if (alwaysOnMode && !alwaysOnPaused && msg.state === 'idle' && engineReady) {
+        console.log('[AlwaysOn] Dictation stopped unexpectedly — restarting in 500ms');
+        setTimeout(() => {
+          if (alwaysOnMode && !alwaysOnPaused && engineReady) {
+            sendToEngine({ type: 'start_dictation' });
+          }
+        }, 500);
+      }
       break;
 
     case 'qr_code':
@@ -910,6 +994,41 @@ ipcMain.on('set-device', (_, deviceId) => {
   sendToEngine({ type: 'set_device', device_id: deviceId });
 });
 
+ipcMain.on('toggle-always-on', (_, enabled) => {
+  alwaysOnMode = !!enabled;
+  alwaysOnPaused = false;
+  saveAlwaysOnConfig(alwaysOnMode);
+  console.log('[AlwaysOn] Mode', alwaysOnMode ? 'ENABLED' : 'DISABLED');
+  
+  if (alwaysOnMode) {
+    // Start dictation immediately
+    if (!isDictating && engineReady) {
+      sendToEngine({ type: 'start_dictation' });
+    }
+    sendToWindow('always-on-status', { active: true, paused: false });
+  } else {
+    // Stop dictation if running
+    if (isDictating) {
+      sendToEngine({ type: 'stop_dictation' });
+    }
+    sendToWindow('always-on-status', { active: false, paused: false });
+  }
+  updateTrayMenu();
+});
+
+ipcMain.on('resume-always-on', () => {
+  if (alwaysOnMode && alwaysOnPaused) {
+    alwaysOnPaused = false;
+    console.log('[AlwaysOn] Resumed by UI');
+    sendToEngine({ type: 'start_dictation' });
+    sendToWindow('always-on-status', { active: true, paused: false });
+  }
+});
+
+ipcMain.handle('get-always-on-status', async () => {
+  return { active: alwaysOnMode, paused: alwaysOnPaused };
+});
+
 ipcMain.on('retry-engine', () => {
   console.log('[IPC] Retry engine requested');
   engineStartAttempts = 0;
@@ -919,6 +1038,46 @@ ipcMain.on('retry-engine', () => {
     startPolling();
   }, 1000);
 });
+
+// ─── Auto-Type (Always-On) ─────────────────────────────────────────────────────
+function autoTypeText(text) {
+  if (!text || !text.trim()) return;
+  const textToType = text.trim() + ' ';
+  
+  // Use clipboard + simulated Ctrl+V
+  clipboard.writeText(textToType);
+  
+  if (process.platform === 'win32') {
+    // Use PowerShell to send Ctrl+V to active window
+    const ps = spawn('powershell', [
+      '-NoProfile', '-NonInteractive', '-Command',
+      'Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait("^v")'
+    ], { windowsHide: true, stdio: 'ignore' });
+    ps.unref();
+  } else if (process.platform === 'linux') {
+    // Use xdotool
+    const xdo = spawn('xdotool', ['key', 'ctrl+v'], { stdio: 'ignore' });
+    xdo.unref();
+  } else if (process.platform === 'darwin') {
+    // Use osascript
+    const osa = spawn('osascript', ['-e', 'tell application "System Events" to keystroke "v" using command down'], { stdio: 'ignore' });
+    osa.unref();
+  }
+  
+  console.log('[AutoType] Typed:', textToType.substring(0, 50));
+}
+
+function saveAlwaysOnConfig(enabled) {
+  const configPath = path.join(app.getPath('userData'), 'voicetyper-config.json');
+  let cfg = {};
+  try {
+    if (fs.existsSync(configPath)) {
+      cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    }
+  } catch {}
+  cfg.alwaysOn = enabled;
+  fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2), 'utf8');
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function getLocalIP() {
