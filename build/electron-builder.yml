@@ -32,8 +32,8 @@ win:
       to: engine/dictee_engine.exe
 
 nsis:
-  oneClick: false
-  allowToChangeInstallationDirectory: true
+  oneClick: true
+  allowToChangeInstallationDirectory: false
   perMachine: false
   createDesktopShortcut: true
   createStartMenuShortcut: true
