@@ -362,11 +362,39 @@ class VoiceTyperEngine:
             self.is_listening = False
             await self._broadcast_status('idle')
 
-    async def _on_transcript(self, text: str, is_final: bool):
+    # Voice commands — spoken words that control the app instead of being typed
+    VOICE_COMMANDS = {
+        'stop': ['stop dictée', 'stop dicté', 'arrête dictée', 'arrête dicté',
+                 'stop dictation', 'arrête toi', 'stop stop', 'pause dictée'],
+        'newline': ['nouvelle ligne', 'à la ligne', 'retour à la ligne', 'new line'],
+        'period': ['point final'],
+        'comma': ['virgule'],
+        'question': ['point d interrogation'],
+        'exclamation': ['point d exclamation'],
+    }
+
+    def _check_voice_command(self, text):
+        normalized = text.lower().strip().rstrip('.')
+        for cmd, triggers in self.VOICE_COMMANDS.items():
+            for trigger in triggers:
+                if normalized == trigger or normalized.endswith(trigger):
+                    return cmd
+        return None
+
+    async def _on_transcript(self, text, is_final):
         if not text.strip():
             return
 
-        log.info(f"Transcript ({'final' if is_final else 'interim'}): {text!r}")
+        kind = 'final' if is_final else 'interim'
+        log.info("Transcript (%s): %r", kind, text)
+
+        # Check for voice commands on final transcripts
+        if is_final:
+            cmd = self._check_voice_command(text)
+            if cmd:
+                log.info("Voice command detected: %s", cmd)
+                await self._handle_voice_command(cmd)
+                return
 
         await self._broadcast_ui({
             'type': 'transcript',
@@ -377,6 +405,26 @@ class VoiceTyperEngine:
 
         if is_final:
             await self._inject_text(text)
+
+    async def _handle_voice_command(self, cmd):
+        if cmd == 'stop':
+            await self._broadcast_ui({'type': 'voice_command', 'command': 'stop', 'message': 'Dictée arrêtée'})
+            await self._stop_dictation()
+        elif cmd == 'newline':
+            await self._inject_text('\n')
+            await self._broadcast_ui({'type': 'voice_command', 'command': 'newline', 'message': 'Nouvelle ligne'})
+        elif cmd == 'period':
+            await self._inject_text('. ')
+            await self._broadcast_ui({'type': 'voice_command', 'command': 'period', 'message': '.'})
+        elif cmd == 'comma':
+            await self._inject_text(', ')
+            await self._broadcast_ui({'type': 'voice_command', 'command': 'comma', 'message': ','})
+        elif cmd == 'question':
+            await self._inject_text('? ')
+            await self._broadcast_ui({'type': 'voice_command', 'command': 'question', 'message': '?'})
+        elif cmd == 'exclamation':
+            await self._inject_text('! ')
+            await self._broadcast_ui({'type': 'voice_command', 'command': 'exclamation', 'message': '!'})
 
     def _on_download_progress(self, model: str, progress: float, status: str, size: str = ''):
         """Called by VoskEngine during model download (may be from a thread)."""
