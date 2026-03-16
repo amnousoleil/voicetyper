@@ -45,6 +45,11 @@ try:
 except ImportError:
     segno = None
 
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
+
 # ─── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -63,6 +68,7 @@ DEFAULT_CONFIG = {
     'engine': 'vosk',
     'model_size': 'small',
     'port': 7523,
+    'device_id': None,
 }
 
 
@@ -168,6 +174,7 @@ class VoiceTyperEngine:
             'listening': self.is_listening,
             'lang': self.config.get('lang'),
             'engine': self.config.get('engine'),
+            'device_id': self.config.get('device_id'),
             'ui_clients': len(self.ui_clients),
             'phone_clients': len(self.phone_clients),
             'platform': platform.system(),
@@ -248,6 +255,11 @@ class VoiceTyperEngine:
         elif msg_type == 'set_engine':
             engine = msg.get('engine', 'vosk')
             await self._set_engine(engine)
+        elif msg_type == 'list_devices':
+            await self._list_devices()
+        elif msg_type == 'set_device':
+            device_id = msg.get('device_id')
+            await self._set_device(device_id)
         else:
             log.debug(f"Unknown UI message type: {msg_type}")
 
@@ -338,6 +350,7 @@ class VoiceTyperEngine:
                 self.stt = WhisperEngine(
                     model_size=model_size,
                     lang=lang,
+                    device_id=self.config.get('device_id'),
                 )
             else:
                 from stt.vosk_engine import VoskEngine
@@ -346,6 +359,7 @@ class VoiceTyperEngine:
                     model_size=model_size,
                     models_dir=str(MODELS_DIR),
                     on_download_progress=self._on_download_progress,
+                    device_id=self.config.get('device_id'),
                 )
 
             await self.stt.start(on_result=self._on_transcript)
@@ -477,6 +491,68 @@ class VoiceTyperEngine:
             await self._stop_dictation()
         self.config['engine'] = engine
         self._save_config()
+        if was_listening:
+            await self._start_dictation()
+
+
+
+    # ── Device management ─────────────────────────────────────────────────────
+    async def _list_devices(self):
+        """List available audio input devices and broadcast the list."""
+        devices = []
+        if sd is not None:
+            try:
+                all_devices = sd.query_devices()
+                default_input_name = ''
+                try:
+                    default_info = sd.query_devices(kind='input')
+                    default_input_name = default_info.get('name', '')
+                except Exception:
+                    pass
+
+                for i, dev in enumerate(all_devices):
+                    if dev.get('max_input_channels', 0) > 0:
+                        is_default = (dev.get('name', '') == default_input_name)
+                        devices.append({
+                            'id': i,
+                            'name': dev.get('name', f'Device {i}'),
+                            'channels': dev.get('max_input_channels', 0),
+                            'is_default': is_default,
+                        })
+            except Exception as e:
+                log.warning(f"Could not query audio devices: {e}")
+
+        saved_device_id = self.config.get('device_id')
+        saved_exists = any(d['id'] == saved_device_id for d in devices) if saved_device_id is not None else False
+        if not saved_exists and saved_device_id is not None:
+            log.info(f"Saved device_id={saved_device_id} no longer exists, falling back to default")
+            self.config['device_id'] = None
+            self._save_config()
+
+        await self._broadcast_ui({
+            'type': 'devices_list',
+            'devices': devices,
+            'selected_id': self.config.get('device_id'),
+        })
+
+    async def _set_device(self, device_id):
+        """Set the active audio input device."""
+        if device_id is not None:
+            try:
+                device_id = int(device_id)
+            except (ValueError, TypeError):
+                log.warning(f"Invalid device_id: {device_id}")
+                return
+        log.info(f"Setting audio device: {device_id}")
+        was_listening = self.is_listening
+        if was_listening:
+            await self._stop_dictation()
+        self.config['device_id'] = device_id
+        self._save_config()
+        await self._broadcast_ui({
+            'type': 'device_set',
+            'device_id': device_id,
+        })
         if was_listening:
             await self._start_dictation()
 

@@ -45,12 +45,14 @@ class WhisperEngine:
         lang: Optional[str] = None,
         device: str = 'auto',
         compute_type: str = 'default',
+        device_id: int = None,
     ):
         self.model_size = model_size
         # 'fr-FR' → 'fr', None stays None (auto-detect)
         self.lang = lang.split('-')[0].lower() if lang else None
         self.device = device
         self.compute_type = compute_type
+        self.device_id = device_id
 
         self._stop_event = threading.Event()
         self._audio_queue: queue.Queue = queue.Queue()
@@ -130,8 +132,11 @@ class WhisperEngine:
             if not self._stop_event.is_set():
                 self._audio_queue.put_nowait(indata[:, 0].copy())
 
+        selected_device = self.device_id  # None = system default
+
         try:
             with sd.InputStream(
+                device=selected_device,
                 samplerate=self.SAMPLE_RATE,
                 channels=1,
                 dtype='float32',

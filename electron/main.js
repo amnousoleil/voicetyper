@@ -510,6 +510,14 @@ function handleEngineMessage(msg) {
       sendToWindow('model-download', msg);
       break;
 
+    case 'devices_list':
+      sendToWindow('devices-list', msg);
+      break;
+
+    case 'device_set':
+      sendToWindow('device-set', msg);
+      break;
+
     default:
       break;
   }
@@ -892,6 +900,14 @@ ipcMain.handle('get-app-version', async () => {
 
 ipcMain.on('check-engine-update', () => {
   checkEngineUpdate();
+});
+
+ipcMain.on('list-devices', () => {
+  sendToEngine({ type: 'list_devices' });
+});
+
+ipcMain.on('set-device', (_, deviceId) => {
+  sendToEngine({ type: 'set_device', device_id: deviceId });
 });
 
 ipcMain.on('retry-engine', () => {

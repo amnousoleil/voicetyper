@@ -99,11 +99,13 @@ class VoskEngine:
         model_size: str = 'small',
         models_dir: Optional[str] = None,
         on_download_progress: Optional[Callable] = None,
+        device_id: Optional[int] = None,
     ):
         self.lang = lang.split('-')[0].lower()
         self.model_size = model_size
         self.models_dir = Path(models_dir) if models_dir else Path.home() / '.voicetyper' / 'models'
         self.on_download_progress = on_download_progress
+        self.device_id = device_id
         self._stop_event = threading.Event()
         self._audio_queue = queue.Queue()
         self._stream = None
@@ -348,8 +350,12 @@ class VoskEngine:
                 except queue.Full:
                     pass  # Drop frame if queue is full
 
+        selected_device = self.device_id  # None = system default
+        log.info(f"Opening audio input device: {selected_device if selected_device is not None else 'system default'}")
+
         try:
             with sd.InputStream(
+                device=selected_device,
                 samplerate=self.SAMPLE_RATE,
                 channels=1,
                 dtype='float32',

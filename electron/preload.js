@@ -22,6 +22,14 @@ contextBridge.exposeInMainWorld('voicetyper', {
     ipcRenderer.send('set-engine', engine);
   },
 
+  listDevices() {
+    ipcRenderer.send('list-devices');
+  },
+
+  setDevice(deviceId) {
+    ipcRenderer.send('set-device', deviceId);
+  },
+
   retryEngine() {
     ipcRenderer.send('retry-engine');
   },
@@ -85,6 +93,18 @@ contextBridge.exposeInMainWorld('voicetyper', {
     const handler = (_, data) => callback(data);
     ipcRenderer.on('model-download', handler);
     return () => ipcRenderer.removeListener('model-download', handler);
+  },
+
+  onDevicesList(callback) {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('devices-list', handler);
+    return () => ipcRenderer.removeListener('devices-list', handler);
+  },
+
+  onDeviceSet(callback) {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on('device-set', handler);
+    return () => ipcRenderer.removeListener('device-set', handler);
   },
 
   onShowQR(callback) {
