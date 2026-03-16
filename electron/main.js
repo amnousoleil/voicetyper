@@ -599,7 +599,7 @@ async function checkForUpdates() {
       console.log('[Updater] No file specified in platform info');
       return;
     }
-    const downloadUrl = platformInfo.url || `${UPDATE_SERVER_URL}/updates/${encodeURIComponent(downloadFilename)}`;
+    const downloadUrl = platformInfo.url || `${UPDATE_SERVER_URL}/releases/${encodeURIComponent(downloadFilename)}`;
 
     console.log(`[Updater] Update available: v${latestVersion}, file: ${downloadFilename}`);
 
