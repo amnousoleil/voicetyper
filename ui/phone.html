@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>VoiceTyper — Mobile</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:         #0f0f0f;
+      --card:       #1a1a1a;
+      --border:     #2a2a2a;
+      --text:       #f0f0f0;
+      --muted:      #888;
+      --red:        #ff3b30;
+      --green:      #30d158;
+      --blue:       #0a84ff;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 16px;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    #app {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      padding: 24px;
+      gap: 28px;
+    }
+
+    /* Header */
+    .header {
+      text-align: center;
+    }
+
+    .header h1 {
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+    }
+
+    .header h1 .icon {
+      font-size: 28px;
+    }
+
+    .header p {
+      font-size: 14px;
+      color: var(--muted);
+      margin-top: 6px;
+    }
+
+    /* Status badge */
+    #status-badge {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 8px 16px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    #status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: #444;
+      transition: background 0.3s;
+    }
+    #status-dot.connected { background: var(--green); }
+    #status-dot.recording { background: var(--red); animation: blink 0.8s ease-in-out infinite; }
+    #status-dot.error { background: var(--red); }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* Main record button */
+    #btn-record {
+      width: 160px; height: 160px;
+      border-radius: 50%;
+      border: none;
+      background: var(--card);
+      box-shadow: 0 0 0 4px var(--border), 0 8px 40px rgba(0,0,0,0.6);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      -webkit-tap-highlight-color: transparent;
+      transition: transform 0.15s, box-shadow 0.3s, background 0.3s;
+    }
+
+    #btn-record:active { transform: scale(0.94); }
+
+    #btn-record .mic {
+      font-size: 52px;
+      line-height: 1;
+    }
+
+    #btn-record .lbl {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--muted);
+      transition: color 0.3s;
+    }
+
+    #btn-record.recording {
+      background: var(--red);
+      box-shadow: 0 0 0 4px rgba(255,59,48,0.4), 0 8px 40px rgba(255,59,48,0.5);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    #btn-record.recording .lbl { color: rgba(255,255,255,0.9); }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 4px rgba(255,59,48,0.5), 0 8px 40px rgba(255,59,48,0.5); }
+      50%       { box-shadow: 0 0 0 18px rgba(255,59,48,0.1), 0 8px 40px rgba(255,59,48,0.5); }
+    }
+
+    /* Transcript display */
+    #transcript-area {
+      width: 100%;
+      max-width: 340px;
+      min-height: 70px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px 16px;
+      font-size: 15px;
+      line-height: 1.5;
+      word-break: break-word;
+      text-align: center;
+    }
+
+    #transcript-area .placeholder {
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    #transcript-area .interim { color: var(--muted); font-style: italic; }
+    #transcript-area .final   { color: var(--text); }
+
+    /* Confirmation toast */
+    #confirm-toast {
+      position: fixed;
+      bottom: 40px;
+      left: 50%;
+      transform: translateX(-50%) translateY(20px);
+      background: var(--green);
+      color: #000;
+      font-weight: 700;
+      font-size: 14px;
+      padding: 10px 20px;
+      border-radius: 20px;
+      opacity: 0;
+      transition: opacity 0.3s, transform 0.3s;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #confirm-toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* Lang selector */
+    .lang-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    #select-lang {
+      background: var(--card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+
+    /* Error screen */
+    #error-screen {
+      display: none;
+      text-align: center;
+      padding: 32px;
+    }
+
+    #error-screen.visible { display: flex; flex-direction: column; gap: 16px; align-items: center; }
+
+    #error-screen .error-icon { font-size: 48px; }
+
+    #error-screen h2 { font-size: 20px; }
+
+    #error-screen p {
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    /* Unsupported screen */
+    #unsupported-screen {
+      display: none;
+      text-align: center;
+      padding: 32px;
+      flex-direction: column;
+      gap: 16px;
+      align-items: center;
+    }
+    #unsupported-screen.visible { display: flex; }
+  </style>
+</head>
+<body>
+
+<!-- Main app UI -->
+<div id="app">
+  <div class="header">
+    <h1><span class="icon">🎙</span> VoiceTyper</h1>
+    <p>Dictez depuis votre téléphone</p>
+  </div>
+
+  <div id="status-badge">
+    <div id="status-dot"></div>
+    <span id="status-text">Connexion…</span>
+  </div>
+
+  <button id="btn-record" disabled>
+    <span class="mic">🎤</span>
+    <span class="lbl">DICTER</span>
+  </button>
+
+  <div id="transcript-area">
+    <span class="placeholder">Appuyez sur le bouton pour dicter…</span>
+  </div>
+
+  <div class="lang-row">
+    <span>Langue :</span>
+    <select id="select-lang">
+      <option value="fr-FR">🇫🇷 Français</option>
+      <option value="en-US">🇺🇸 English</option>
+      <option value="es-ES">🇪🇸 Español</option>
+      <option value="de-DE">🇩🇪 Deutsch</option>
+      <option value="it-IT">🇮🇹 Italiano</option>
+      <option value="pt-BR">🇧🇷 Português</option>
+      <option value="ru-RU">🇷🇺 Русский</option>
+      <option value="ar-SA">🇸🇦 العربية</option>
+      <option value="zh-CN">🇨🇳 中文</option>
+      <option value="ja-JP">🇯🇵 日本語</option>
+    </select>
+  </div>
+</div>
+
+<!-- Error screen -->
+<div id="error-screen">
+  <span class="error-icon">🔌</span>
+  <h2>Connexion perdue</h2>
+  <p>Impossible de se connecter à VoiceTyper sur l'ordinateur.<br>
+     Vérifiez que l'application est ouverte et que vous êtes sur le même réseau Wi-Fi.</p>
+</div>
+
+<!-- Unsupported browser screen -->
+<div id="unsupported-screen">
+  <span class="error-icon">⚠️</span>
+  <h2>Navigateur non supporté</h2>
+  <p>Votre navigateur ne supporte pas la reconnaissance vocale.<br>
+     Utilisez <strong>Chrome</strong> ou <strong>Safari</strong> sur votre téléphone.</p>
+</div>
+
+<!-- Confirmation toast -->
+<div id="confirm-toast">✓ Injecté</div>
+
+<script src="js/phone-client.js"></script>
+</body>
+</html>

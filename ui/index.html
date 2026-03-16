@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>VoiceTyper</title>
+  <style>
+    /* ─── Reset & Base ──────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #0f0f0f;
+      --bg-card:     #1a1a1a;
+      --bg-hover:    #242424;
+      --border:      #2a2a2a;
+      --text:        #f0f0f0;
+      --text-muted:  #888;
+      --accent-red:  #ff3b30;
+      --accent-red2: #ff6b63;
+      --accent-green:#30d158;
+      --accent-blue: #0a84ff;
+      --radius:      12px;
+      --radius-sm:   8px;
+    }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* ─── Layout ────────────────────────────────────────────────────────────── */
+    #app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+
+    /* ─── Titlebar ──────────────────────────────────────────────────────────── */
+    #titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px 8px;
+      -webkit-app-region: drag;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #titlebar .logo {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 15px;
+      letter-spacing: -0.3px;
+    }
+
+    #titlebar .logo-icon {
+      width: 26px; height: 26px;
+      background: var(--accent-red);
+      border-radius: 7px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px;
+      flex-shrink: 0;
+    }
+
+    #titlebar .status-pill {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--text-muted);
+      -webkit-app-region: no-drag;
+    }
+
+    #titlebar .status-pill .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #444;
+      transition: background 0.3s;
+    }
+    #titlebar .status-pill .dot.connected { background: var(--accent-green); }
+    #titlebar .status-pill .dot.error { background: var(--accent-red); }
+
+    .win-controls {
+      display: flex;
+      gap: 6px;
+      -webkit-app-region: no-drag;
+    }
+
+    .win-btn {
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      border: none;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .win-btn:hover { background: var(--bg-hover); color: var(--text); }
+    .win-btn.close:hover { background: var(--accent-red); color: #fff; }
+
+    /* ─── Scrollable content ────────────────────────────────────────────────── */
+    #content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    #content::-webkit-scrollbar { width: 4px; }
+    #content::-webkit-scrollbar-track { background: transparent; }
+    #content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* ─── Main dictation button ─────────────────────────────────────────────── */
+    #dictation-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+      padding: 10px 0;
+    }
+
+    #btn-dictate {
+      width: 110px; height: 110px;
+      border-radius: 50%;
+      border: none;
+      background: var(--bg-card);
+      box-shadow: 0 0 0 3px var(--border), 0 4px 24px rgba(0,0,0,0.4);
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: transform 0.15s, box-shadow 0.3s, background 0.3s;
+      position: relative;
+      -webkit-app-region: no-drag;
+    }
+
+    #btn-dictate:hover {
+      transform: scale(1.04);
+      box-shadow: 0 0 0 3px #333, 0 6px 32px rgba(0,0,0,0.5);
+    }
+
+    #btn-dictate:active { transform: scale(0.97); }
+
+    #btn-dictate .mic-icon {
+      font-size: 34px;
+      line-height: 1;
+      transition: transform 0.2s;
+    }
+
+    #btn-dictate .btn-label {
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      transition: color 0.3s;
+    }
+
+    /* Active state */
+    #btn-dictate.listening {
+      background: var(--accent-red);
+      box-shadow: 0 0 0 3px rgba(255,59,48,0.3), 0 6px 32px rgba(255,59,48,0.4);
+      animation: pulse-ring 1.5s ease-out infinite;
+    }
+
+    #btn-dictate.listening .btn-label { color: rgba(255,255,255,0.85); }
+
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 3px rgba(255,59,48,0.5), 0 6px 32px rgba(255,59,48,0.4); }
+      50%  { box-shadow: 0 0 0 12px rgba(255,59,48,0.15), 0 6px 32px rgba(255,59,48,0.4); }
+      100% { box-shadow: 0 0 0 3px rgba(255,59,48,0.5), 0 6px 32px rgba(255,59,48,0.4); }
+    }
+
+    /* Processing state */
+    #btn-dictate.processing {
+      background: #1a1500;
+      box-shadow: 0 0 0 3px rgba(255,200,0,0.3), 0 6px 32px rgba(255,200,0,0.2);
+    }
+
+    #dictation-hint {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+    }
+
+    #dictation-hint kbd {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1px 6px;
+      font-size: 11px;
+      font-family: inherit;
+      color: var(--text);
+    }
+
+    /* ─── Waveform ──────────────────────────────────────────────────────────── */
+    #waveform {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      height: 28px;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+
+    #waveform.active { opacity: 1; }
+
+    .wave-bar {
+      width: 3px;
+      background: var(--accent-red);
+      border-radius: 2px;
+      animation: wave 0.8s ease-in-out infinite;
+      transform-origin: bottom;
+    }
+
+    .wave-bar:nth-child(2) { animation-delay: 0.1s; }
+    .wave-bar:nth-child(3) { animation-delay: 0.2s; }
+    .wave-bar:nth-child(4) { animation-delay: 0.3s; }
+    .wave-bar:nth-child(5) { animation-delay: 0.4s; }
+    .wave-bar:nth-child(6) { animation-delay: 0.3s; }
+    .wave-bar:nth-child(7) { animation-delay: 0.2s; }
+    .wave-bar:nth-child(8) { animation-delay: 0.1s; }
+
+    @keyframes wave {
+      0%, 100% { height: 4px; }
+      50%       { height: 22px; }
+    }
+
+    /* ─── Settings ──────────────────────────────────────────────────────────── */
+    .settings-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .select-group {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .select-group label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .select-group select {
+      width: 100%;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+      appearance: none;
+      -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 10px center;
+      padding-right: 28px;
+      transition: border-color 0.15s;
+    }
+
+    .select-group select:hover { border-color: #444; }
+    .select-group select:focus { outline: none; border-color: var(--accent-blue); }
+
+    /* ─── Transcript ────────────────────────────────────────────────────────── */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .card-title {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    #transcript-box {
+      min-height: 60px;
+      max-height: 100px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.6;
+      color: var(--text);
+      word-break: break-word;
+    }
+
+    #transcript-box::-webkit-scrollbar { width: 3px; }
+    #transcript-box::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    #transcript-interim {
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    .clear-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 16px;
+      padding: 2px;
+      border-radius: 4px;
+      transition: color 0.15s, background 0.15s;
+      line-height: 1;
+    }
+    .clear-btn:hover { color: var(--text); background: var(--bg-hover); }
+
+    /* ─── Model download progress ───────────────────────────────────────────── */
+    #download-section {
+      display: none;
+    }
+    #download-section.visible { display: block; }
+
+    .progress-bar-wrap {
+      background: var(--border);
+      border-radius: 4px;
+      height: 6px;
+      overflow: hidden;
+      margin-top: 6px;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--accent-blue);
+      border-radius: 4px;
+      transition: width 0.3s;
+    }
+
+    #download-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+
+    /* ─── QR Code section ───────────────────────────────────────────────────── */
+    #qr-section {
+      display: none;
+    }
+    #qr-section.visible { display: block; }
+
+    .qr-inner {
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    #qr-image-wrap {
+      flex-shrink: 0;
+      width: 100px; height: 100px;
+      background: #fff;
+      border-radius: 8px;
+      display: flex; align-items: center; justify-content: center;
+      overflow: hidden;
+    }
+
+    #qr-image-wrap svg, #qr-image-wrap img {
+      width: 90px; height: 90px;
+    }
+
+    .qr-info {
+      flex: 1;
+    }
+
+    .qr-info p {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+
+    #qr-url {
+      font-size: 11px;
+      color: var(--accent-blue);
+      word-break: break-all;
+      cursor: pointer;
+    }
+    #qr-url:hover { text-decoration: underline; }
+
+    .qr-toggle-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: var(--radius-sm);
+      padding: 4px 8px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .qr-toggle-btn:hover { border-color: #444; color: var(--text); }
+    .qr-toggle-btn.active { border-color: var(--accent-blue); color: var(--accent-blue); }
+
+    /* ─── History ───────────────────────────────────────────────────────────── */
+    #history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 160px;
+      overflow-y: auto;
+    }
+
+    #history-list::-webkit-scrollbar { width: 3px; }
+    #history-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .history-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 8px;
+      background: var(--bg-hover);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .history-item:hover { background: #2a2a2a; }
+
+    .history-time {
+      font-size: 10px;
+      color: var(--text-muted);
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+
+    .history-text {
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex: 1;
+    }
+
+    .history-empty {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-align: center;
+      padding: 12px;
+    }
+
+    /* ─── Footer ────────────────────────────────────────────────────────────── */
+    #footer {
+      padding: 10px 16px;
+      border-top: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    #footer .shortcut-hint {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    #footer kbd {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 10px;
+      font-family: inherit;
+    }
+
+    #engine-indicator {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    #engine-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: #444;
+      transition: background 0.3s;
+    }
+    #engine-dot.ok { background: var(--accent-green); }
+    #engine-dot.error { background: var(--accent-red); }
+
+    /* ─── Toasts ────────────────────────────────────────────────────────────── */
+    #toast-container {
+      position: fixed;
+      bottom: 52px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      z-index: 9999;
+      pointer-events: none;
+    }
+
+    .toast {
+      background: #2a2a2a;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 14px;
+      font-size: 12px;
+      color: var(--text);
+      white-space: nowrap;
+      animation: toast-in 0.2s ease-out;
+      pointer-events: none;
+    }
+
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ─── Divider ───────────────────────────────────────────────────────────── */
+    .divider {
+      height: 1px;
+      background: var(--border);
+    }
+
+    /* ─── Update banner ─────────────────────────────────────────────────────── */
+    #update-banner {
+      display: none;
+      padding: 8px 16px;
+      background: #1a2a1a;
+      border-bottom: 1px solid #2d5a27;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      flex-shrink: 0;
+    }
+    #update-banner.visible { display: flex; }
+    #update-banner.ready { background: #1a2a1a; border-color: var(--accent-green); }
+    #update-banner.downloading { background: #1a1a2a; border-color: var(--accent-blue); }
+
+    #update-banner .update-text {
+      flex: 1;
+      color: var(--text);
+    }
+
+    #update-banner .update-btn {
+      background: var(--accent-green);
+      border: none;
+      border-radius: 5px;
+      color: #000;
+      font-size: 11px;
+      font-weight: 600;
+      padding: 4px 10px;
+      cursor: pointer;
+      white-space: nowrap;
+      -webkit-app-region: no-drag;
+    }
+    #update-banner .update-btn:hover { filter: brightness(1.1); }
+    #update-banner .update-dismiss {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 14px;
+      padding: 2px 4px;
+      -webkit-app-region: no-drag;
+    }
+
+    /* ─── Version indicator ─────────────────────────────────────────────────── */
+    #app-version {
+      font-size: 10px;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Titlebar -->
+  <div id="titlebar">
+    <div class="logo">
+      <div class="logo-icon">🎙</div>
+      <span>VoiceTyper</span>
+    </div>
+    <div class="status-pill">
+      <div class="dot" id="engine-status-dot"></div>
+      <span id="engine-status-text">Démarrage…</span>
+    </div>
+    <div class="win-controls">
+      <button class="win-btn" id="btn-minimize" title="Réduire">—</button>
+      <button class="win-btn close" id="btn-close" title="Fermer">✕</button>
+    </div>
+  </div>
+
+  <!-- Update banner -->
+  <div id="update-banner">
+    <span id="update-banner-text" class="update-text">Mise à jour disponible</span>
+    <button id="update-btn" class="update-btn">Installer</button>
+    <button id="update-dismiss" class="update-dismiss" title="Ignorer">✕</button>
+  </div>
+
+  <!-- Main content -->
+  <div id="content">
+
+    <!-- Dictation button -->
+    <div id="dictation-section">
+      <button id="btn-dictate" title="Cliquez pour dicter">
+        <span class="mic-icon">🎤</span>
+        <span class="btn-label">DICTER</span>
+      </button>
+
+      <!-- Waveform animation -->
+      <div id="waveform">
+        <div class="wave-bar" style="height:8px"></div>
+        <div class="wave-bar" style="height:14px"></div>
+        <div class="wave-bar" style="height:20px"></div>
+        <div class="wave-bar" style="height:10px"></div>
+        <div class="wave-bar" style="height:22px"></div>
+        <div class="wave-bar" style="height:16px"></div>
+        <div class="wave-bar" style="height:10px"></div>
+        <div class="wave-bar" style="height:6px"></div>
+      </div>
+
+      <p id="dictation-hint">
+        Ou utilisez <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Espace</kbd> depuis n'importe où
+      </p>
+    </div>
+
+    <!-- Settings -->
+    <div class="settings-row">
+      <div class="select-group">
+        <label>Langue</label>
+        <select id="select-lang">
+          <option value="fr">🇫🇷 Français</option>
+          <option value="en">🇺🇸 English</option>
+          <option value="es">🇪🇸 Español</option>
+          <option value="de">🇩🇪 Deutsch</option>
+          <option value="it">🇮🇹 Italiano</option>
+          <option value="pt">🇧🇷 Português</option>
+          <option value="ru">🇷🇺 Русский</option>
+          <option value="ar">🇸🇦 العربية</option>
+          <option value="zh">🇨🇳 中文</option>
+          <option value="ja">🇯🇵 日本語</option>
+        </select>
+      </div>
+      <div class="select-group">
+        <label>Moteur STT</label>
+        <select id="select-engine">
+          <option value="vosk">⚡ Vosk — Rapide</option>
+          <option value="whisper">🎯 Whisper — Précis</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Model download progress -->
+    <div id="download-section" class="card">
+      <div class="card-header">
+        <span class="card-title">📥 Téléchargement du modèle</span>
+      </div>
+      <div id="download-label">Initialisation…</div>
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="download-progress" style="width:0%"></div>
+      </div>
+    </div>
+
+    <!-- Transcript -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">📝 Transcription</span>
+        <button class="clear-btn" id="btn-clear-transcript" title="Effacer">✕</button>
+      </div>
+      <div id="transcript-box">
+        <span id="transcript-final"></span><span id="transcript-interim"></span>
+      </div>
+    </div>
+
+    <!-- QR Code -->
+    <div class="card" id="qr-section">
+      <div class="card-header">
+        <span class="card-title">📱 Dicter depuis le téléphone</span>
+        <button class="qr-toggle-btn active" id="btn-qr-toggle">Masquer</button>
+      </div>
+      <div class="qr-inner">
+        <div id="qr-image-wrap">
+          <span style="color:#ccc;font-size:11px;">Chargement…</span>
+        </div>
+        <div class="qr-info">
+          <p>Scannez ce QR code avec votre téléphone pour dicter directement depuis son microphone.</p>
+          <div id="qr-url">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🕐 Historique</span>
+        <button class="clear-btn" id="btn-clear-history" title="Effacer l'historique">✕</button>
+      </div>
+      <div id="history-list">
+        <div class="history-empty">Aucune dictée pour le moment</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Footer -->
+  <div id="footer">
+    <div class="shortcut-hint">
+      <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Espace</kbd> = Toggle dictée
+    </div>
+    <div id="engine-indicator">
+      <div id="engine-dot"></div>
+      <span id="engine-dot-label">Hors ligne</span>
+    </div>
+    <span id="app-version"></span>
+  </div>
+
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="js/renderer.js"></script>
+</body>
+</html>

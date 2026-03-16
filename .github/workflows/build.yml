@@ -1,0 +1,100 @@
+name: Build VoiceTyper
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: |
+          pip install pyinstaller aiohttp aiohttp-cors vosk sounddevice numpy pyperclip segno pynput pywin32
+
+      - name: Build Python sidecar
+        run: |
+          cd engine
+          pyinstaller --onefile --name dictee_engine --paths . --hidden-import vosk --hidden-import sounddevice --hidden-import pyperclip --hidden-import aiohttp --hidden-import aiohttp_cors --hidden-import segno --hidden-import pynput --hidden-import pynput.keyboard --hidden-import pynput.mouse --hidden-import win32api --hidden-import win32con --exclude-module torch --exclude-module faster_whisper --exclude-module tensorflow --exclude-module scipy --exclude-module matplotlib --exclude-module pandas --clean dictee_engine.py
+          copy dist\dictee_engine.exe ..\bin\dictee_engine.exe
+
+      - name: Install Node deps
+        run: npm install
+
+      - name: Download Vosk model
+        run: |
+          mkdir -p models
+          curl -L "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip" -o vosk-fr.zip
+          tar -xf vosk-fr.zip -C models
+          del vosk-fr.zip
+
+      - name: Build Windows exe
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run build:win
+
+      - name: Upload Windows installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceTyper-Windows
+          path: release/*.exe
+          retention-days: 30
+
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        run: pip install pyinstaller aiohttp aiohttp-cors vosk sounddevice numpy pyperclip segno pynput
+
+      - name: Build Python sidecar
+        run: |
+          cd engine
+          pyinstaller --onefile --name dictee_engine --paths . --hidden-import vosk --hidden-import sounddevice --hidden-import pyperclip --hidden-import aiohttp --hidden-import aiohttp_cors --hidden-import segno --hidden-import pynput --exclude-module torch --exclude-module faster_whisper --clean dictee_engine.py
+          cp dist/dictee_engine ../bin/dictee_engine-mac
+
+      - name: Install Node deps
+        run: npm install
+
+      - name: Download Vosk model
+        run: |
+          mkdir -p models
+          curl -L "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip" -o vosk-fr.zip
+          unzip -q vosk-fr.zip -d models
+          rm vosk-fr.zip
+
+      - name: Build macOS dmg
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run build:mac
+
+      - name: Upload macOS dmg
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceTyper-macOS
+          path: release/*.dmg
+          retention-days: 30

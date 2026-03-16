@@ -1,0 +1,30 @@
+# ─── Core dependencies ────────────────────────────────────────────────────────
+aiohttp>=3.9.0
+aiohttp-cors>=0.7.0
+
+# ─── Audio capture ────────────────────────────────────────────────────────────
+sounddevice>=0.4.6
+numpy>=1.24.0
+
+# ─── STT engines ─────────────────────────────────────────────────────────────
+vosk>=0.3.45
+
+# ─── Clipboard ────────────────────────────────────────────────────────────────
+pyperclip>=1.8.2
+
+# ─── QR code generation ───────────────────────────────────────────────────────
+segno>=1.6.0
+
+# ─── Binary packaging ─────────────────────────────────────────────────────────
+pyinstaller>=6.0
+
+# ─── Platform-specific ────────────────────────────────────────────────────────
+# Windows only:
+pywin32>=306; sys_platform == "win32"
+
+# Linux fallback keyboard injection (if xdotool/ydotool not available):
+pynput>=1.7.6; sys_platform == "linux"
+
+# ─── Optional: high-accuracy mode (uncomment to enable Whisper) ───────────────
+# faster-whisper>=1.0.0
+# torch>=2.0.0  # For GPU acceleration (optional, CPU works without it)

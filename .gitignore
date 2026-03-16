@@ -1,0 +1,9 @@
+node_modules/
+release/
+dist/
+build/dictee_engine/
+*.pyc
+__pycache__/
+*.spec
+.DS_Store
+*.bak*
