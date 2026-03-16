@@ -338,7 +338,7 @@ class VoskEngine:
         import sounddevice as sd
         import numpy as np
 
-        BLOCK_SIZE = 4000  # ~250ms at 16kHz
+        BLOCK_SIZE = 2000  # ~125ms at 16kHz — faster response
 
         def _callback(indata, frames, time_info, status):
             if status:
