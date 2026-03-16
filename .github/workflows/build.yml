@@ -35,7 +35,9 @@ jobs:
           cd engine
           python -m PyInstaller --onedir --name dictee_engine \
             --paths . \
+            --collect-all vosk \
             --hidden-import vosk \
+            --collect-all sounddevice \
             --hidden-import sounddevice \
             --hidden-import _sounddevice_data \
             --hidden-import numpy \
@@ -114,7 +116,9 @@ jobs:
           cd engine
           python3 -m PyInstaller --onefile --name dictee_engine \
             --paths . \
+            --collect-all vosk \
             --hidden-import vosk \
+            --collect-all sounddevice \
             --hidden-import sounddevice \
             --hidden-import _sounddevice_data \
             --hidden-import numpy \
@@ -186,7 +190,9 @@ jobs:
           cd engine
           python3 -m PyInstaller --onefile --name dictee_engine \
             --paths . \
+            --collect-all vosk \
             --hidden-import vosk \
+            --collect-all sounddevice \
             --hidden-import sounddevice \
             --hidden-import _sounddevice_data \
             --hidden-import numpy \
