@@ -418,7 +418,7 @@ let pollErrorCount = 0;
 function startPolling() {
   if (pollTimer) return;
   console.log('[Poll] Starting HTTP polling on', ENGINE_HTTP_URL);
-  pollTimer = setInterval(pollEngine, 250);
+  pollTimer = setInterval(pollEngine, 2000);
 }
 
 function stopPolling() {
