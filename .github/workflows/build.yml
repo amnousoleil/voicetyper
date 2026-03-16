@@ -33,7 +33,7 @@ jobs:
         shell: bash
         run: |
           cd engine
-          python -m PyInstaller --onefile --name dictee_engine \
+          python -m PyInstaller --onedir --name dictee_engine \
             --paths . \
             --hidden-import vosk \
             --hidden-import sounddevice \
@@ -71,7 +71,7 @@ jobs:
             --exclude-module tkinter \
             --clean \
             dictee_engine.py
-          cp dist/dictee_engine.exe ../bin/dictee_engine.exe
+          cp -r dist/dictee_engine ../bin/dictee_engine_dir
 
       - name: Install Node deps
         run: npm install

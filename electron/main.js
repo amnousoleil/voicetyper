@@ -8,6 +8,41 @@ const fs = require('fs');
 const https = require('https');
 const http = require('http');
 
+// ─── Crash & Bug Reporter ─────────────────────────────────────────────────────
+const REPORT_URL = 'http://72.60.215.20:8766/report';
+
+function sendBugReport(type, data) {
+  try {
+    const payload = JSON.stringify({
+      type,
+      version: '1.0.0',
+      platform: process.platform,
+      arch: process.arch,
+      timestamp: new Date().toISOString(),
+      hostname: os.hostname(),
+      ...data,
+    });
+    const req = http.request(REPORT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
+      timeout: 5000,
+    });
+    req.on('error', () => {});
+    req.write(payload);
+    req.end();
+  } catch (_) {}
+}
+
+process.on('uncaughtException', (err) => {
+  sendBugReport('crash', { error: err.message, stack: err.stack });
+  console.error('[CRASH]', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  sendBugReport('unhandled_rejection', { error: String(reason), stack: String(reason && reason.stack) });
+  console.error('[UNHANDLED]', reason);
+});
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 const ENGINE_PORT = 7523;
 const ENGINE_HTTP_URL = `http://127.0.0.1:${ENGINE_PORT}`;
@@ -318,14 +353,17 @@ async function startPythonEngine() {
 }
 
 function getEnginePath() {
-  const binaryName = process.platform === 'win32' ? 'dictee_engine.exe' : 'dictee_engine';
-
-  // Check in resources (packaged app)
   const resourcesPath = process.resourcesPath || '';
-  const binaryPath = path.join(resourcesPath, 'engine', binaryName);
-  if (fs.existsSync(binaryPath)) return binaryPath;
-
-  // Development: use Python script
+  if (process.platform === 'win32') {
+    // Windows --onedir: engine/ contient dictee_engine.exe + ses deps
+    const onedirPath = path.join(resourcesPath, 'engine', 'dictee_engine.exe');
+    if (fs.existsSync(onedirPath)) return onedirPath;
+  } else {
+    // macOS/Linux --onefile: binaire unique
+    const binaryPath = path.join(resourcesPath, 'engine', 'dictee_engine');
+    if (fs.existsSync(binaryPath)) return binaryPath;
+  }
+  // Dev mode: script Python
   return path.join(__dirname, '..', 'engine', 'dictee_engine.py');
 }
 
