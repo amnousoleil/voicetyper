@@ -29,6 +29,19 @@ jobs:
         run: mkdir -p bin
         shell: bash
 
+      - name: Download Vosk model (FR small)
+        shell: bash
+        run: |
+          mkdir -p models
+          if [ ! -d "models/vosk-model-small-fr-0.22" ]; then
+            echo "Downloading Vosk FR model..."
+            curl -L -o /tmp/vosk-fr.zip https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip
+            unzip -q /tmp/vosk-fr.zip -d models/
+            echo "Model extracted: $(ls models/)"
+          else
+            echo "Model already present"
+          fi
+
       - name: Build Python sidecar
         shell: bash
         run: |

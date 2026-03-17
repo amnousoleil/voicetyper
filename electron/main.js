@@ -10,6 +10,34 @@ const http = require('http');
 const crypto = require('crypto');
 const { clipboard } = require('electron');
 
+// ─── File Logger ─────────────────────────────────────────────────────────────
+let _logFile = null;
+function initLogFile() {
+  try {
+    const logDir = app ? app.getPath('userData') : require('os').tmpdir();
+    _logFile = require('path').join(logDir, 'voicetyper.log');
+    // Keep last 500KB
+    try {
+      const stat = require('fs').statSync(_logFile);
+      if (stat.size > 500000) require('fs').writeFileSync(_logFile, '');
+    } catch {}
+    require('fs').appendFileSync(_logFile, '\n=== SESSION ' + new Date().toISOString() + ' ===\n');
+  } catch {}
+}
+
+function writeLog(level, ...args) {
+  const line = '[' + new Date().toISOString() + '] [' + level + '] ' + args.join(' ');
+  if (level === 'ERROR') console.error(line);
+  else console.log(line);
+  if (_logFile) {
+    try { require('fs').appendFileSync(_logFile, line + '\n'); } catch {}
+  }
+  // Send errors/warns to server
+  if (level === 'ERROR' || level === 'WARN') {
+    sendBugReport('log_' + level.toLowerCase(), { message: args.join(' ') });
+  }
+}
+
 // ─── Crash & Bug Reporter ─────────────────────────────────────────────────────
 const REPORT_URL = 'http://72.60.215.20:8766/report';
 
@@ -94,6 +122,8 @@ if (!gotTheLock) {
 
 // ─── App lifecycle ─────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
+  initLogFile();
+  writeLog('INFO', 'App started v' + app.getVersion() + ' platform=' + process.platform + ' arch=' + process.arch);
   createMainWindow();
   createTray();
   registerShortcuts();
@@ -336,7 +366,7 @@ function toggleDictation() {
 // ─── Python Engine ────────────────────────────────────────────────────────────
 async function startPythonEngine() {
   const enginePath = getEnginePath();
-  console.log('[Engine] Starting Python engine:', enginePath);
+  writeLog('INFO', 'Engine path:', enginePath, 'exists=' + fs.existsSync(enginePath));
 
   if (!fs.existsSync(enginePath)) {
     console.error('[Engine] Engine not found at:', enginePath);
@@ -356,15 +386,15 @@ async function startPythonEngine() {
   ];
 
   let modelsPath = candidateModelsPaths[0]; // default
-  console.log('[Engine] Searching for models in candidates:');
+  writeLog('INFO', 'Searching models in candidates...');
   for (const candidate of candidateModelsPaths) {
     const exists = fs.existsSync(candidate);
-    console.log('[Engine]   ', candidate, exists ? 'FOUND' : 'not found');
+    writeLog('INFO', '  candidate:', candidate, exists ? 'FOUND' : 'not found');
     if (exists && modelsPath === candidateModelsPaths[0]) {
       modelsPath = candidate;
     }
   }
-  console.log('[Engine] Using models path:', modelsPath);
+  writeLog('INFO', 'Using models path:', modelsPath, 'exists=' + fs.existsSync(modelsPath));
 
   const engineEnv = {
     ...process.env,
@@ -394,16 +424,16 @@ async function startPythonEngine() {
 
     pythonProcess.stdout.on('data', (data) => {
       const lines = data.toString('utf8').split('\n').filter(Boolean);
-      lines.forEach(line => console.log('[Python]', line));
+      lines.forEach(line => writeLog('PY', line));
     });
 
     pythonProcess.stderr.on('data', (data) => {
       const lines = data.toString('utf8').split('\n').filter(Boolean);
-      lines.forEach(line => console.error('[Python ERR]', line));
+      lines.forEach(line => writeLog('PY_ERR', line));
     });
 
     pythonProcess.on('exit', (code, signal) => {
-      console.log(`[Engine] Python exited — code=${code}, signal=${signal}`);
+      writeLog('WARN', `Engine exited code=${code} signal=${signal}`);
       pythonProcess = null;
       engineReady = false;
       sendToWindow('engine-status', { connected: false });
@@ -424,7 +454,7 @@ async function startPythonEngine() {
     });
 
     pythonProcess.on('error', (err) => {
-      console.error('[Engine] Spawn error:', err.message);
+      writeLog('ERROR', 'Engine spawn error:', err.message);
       pythonProcess = null;
       sendToWindow('engine-fatal', {
         message: `Impossible de lancer le moteur: ${err.message}`,
