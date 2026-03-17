@@ -32,10 +32,6 @@ win:
   extraResources:
     - from: bin/dictee_engine_dir/
       to: engine/
-    - from: models/
-      to: models/
-      filter:
-        - "**/*"
 
 nsis:
   oneClick: true
@@ -60,10 +56,6 @@ mac:
   extraResources:
     - from: bin/dictee_engine
       to: engine/dictee_engine
-    - from: models/
-      to: models/
-      filter:
-        - "**/*"
 
 dmg:
   title: GiriVoiceTyper
@@ -95,10 +87,6 @@ linux:
   extraResources:
     - from: bin/dictee_engine
       to: engine/dictee_engine
-    - from: models/
-      to: models/
-      filter:
-        - "**/*"
 
 deb:
   depends:
