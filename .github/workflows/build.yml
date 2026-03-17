@@ -96,6 +96,17 @@ jobs:
       - name: Install Node deps
         run: npm install
 
+      - name: Verify models directory
+        shell: bash
+        run: |
+          echo "=== Models directory ==="
+          ls -la models/
+          ls -la models/vosk-model-small-fr-0.22/
+          ls -la models/vosk-model-small-fr-0.22/am/final.mdl
+          echo "=== bin/dictee_engine_dir ==="
+          ls -la bin/dictee_engine_dir/ | head -10
+          echo "=== All good ==="
+
       - name: Build Windows exe
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
