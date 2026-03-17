@@ -30,17 +30,22 @@ jobs:
         shell: bash
 
       - name: Download Vosk model (FR small)
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p models
-          if [ ! -d "models/vosk-model-small-fr-0.22" ]; then
-            echo "Downloading Vosk FR model..."
-            curl -L -o /tmp/vosk-fr.zip https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip
-            unzip -q /tmp/vosk-fr.zip -d models/
-            echo "Model extracted: $(ls models/)"
-          else
-            echo "Model already present"
-          fi
+          $modelDir = "models\\vosk-model-small-fr-0.22"
+          $modelFile = "$modelDir\\am\\final.mdl"
+          if (Test-Path $modelFile) {
+            Write-Host "Model already present and complete"
+          } else {
+            Write-Host "Downloading Vosk FR small model..."
+            if (Test-Path $modelDir) { Remove-Item -Recurse -Force $modelDir }
+            if (Test-Path "models\\vosk-fr.zip") { Remove-Item -Force "models\\vosk-fr.zip" }
+            New-Item -ItemType Directory -Force -Path "models" | Out-Null
+            Invoke-WebRequest -Uri "https://alphacephei.com/vosk/models/vosk-model-small-fr-0.22.zip" -OutFile "models\\vosk-fr.zip" -TimeoutSec 120
+            Expand-Archive -Path "models\\vosk-fr.zip" -DestinationPath "models" -Force
+            Remove-Item "models\\vosk-fr.zip"
+            Write-Host "Model extracted: $(Get-ChildItem models | Select-Object -ExpandProperty Name)"
+          }
 
       - name: Build Python sidecar
         shell: bash
